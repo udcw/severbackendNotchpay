@@ -22,7 +22,7 @@ router.post("/initialize", async (req, res) => {
       currency: "XAF",
       description,
       reference: `REF-${Date.now()}`,
-      callback: process.env.NOTCHPAY_CALLBACK_URL || "http://localhost:8081/payment-webview-callback"
+      callback: process.env.NOTCHPAY_CALLBACK_URL || " https://alijah-hyperdiastolic-sybil.ngrok-free.dev/payment-webview-callback"
     };
 
     const response = await axios.post(
