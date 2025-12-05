@@ -248,61 +248,160 @@ router.get("/transactions", authenticateUser, async (req, res) => {
 });
 
 // 🔥 WEBHOOK NOTCHPAY (public - pas d'authentification)
-router.post("/webhook", express.raw({ type: 'application/json' }), async (req, res) => {
+router.post("/webhook", async (req, res) => {
   try {
-    const payload = req.body;
+    // Lire le body RAW pour la vérification de signature
+    const rawBody = req.body;
     const signature = req.headers['x-notchpay-signature'];
     
-    console.log("📬 Webhook NotchPay reçu:", JSON.stringify(payload, null, 2));
-
+    console.log("📬 Webhook NotchPay reçu, signature:", signature);
+    
     // Vérifier la signature si configurée
     if (NOTCHPAY_CONFIG.webhookSecret && signature) {
-      // Ici, vous devriez valider la signature
-      // NotchPay utilise généralement HMAC SHA256
+      const crypto = require('crypto');
+      const hmac = crypto.createHmac('sha256', NOTCHPAY_CONFIG.webhookSecret);
+      const digest = hmac.update(rawBody).digest('hex');
+      
+      if (signature !== digest) {
+        console.error("❌ Signature webhook invalide");
+        return res.status(401).json({ 
+          success: false, 
+          message: "Signature invalide" 
+        });
+      }
     }
+    
+    // Parser le JSON
+    const payload = typeof rawBody === 'string' ? JSON.parse(rawBody) : rawBody;
+    
+    console.log("📦 Payload webhook:", JSON.stringify(payload, null, 2));
 
     const { event, data } = payload;
     const transaction = data?.transaction;
 
-    if (transaction?.reference) {
-      // Mettre à jour la transaction en base
+    if (!transaction?.reference) {
+      console.error("❌ Référence manquante dans le webhook");
+      return res.status(400).json({ 
+        success: false, 
+        message: "Référence manquante" 
+      });
+    }
+
+    console.log(`🔄 Traitement webhook ${event} pour référence: ${transaction.reference}`);
+
+    // 1. Mettre à jour la transaction en base
+    const { data: existingTransaction } = await supabase
+      .from('transactions')
+      .select('*')
+      .eq('reference', transaction.reference)
+      .single();
+
+    if (!existingTransaction) {
+      console.error(`❌ Transaction non trouvée: ${transaction.reference}`);
+      
+      // Créer la transaction si elle n'existe pas
+      const { error: createError } = await supabase
+        .from('transactions')
+        .insert({
+          reference: transaction.reference,
+          amount: transaction.amount / 100, // Convertir centimes en XAF
+          currency: transaction.currency || 'XAF',
+          status: transaction.status,
+          payment_method: 'notchpay',
+          metadata: {
+            webhook_payload: payload,
+            webhook_processed_at: new Date().toISOString(),
+            notchpay_transaction: transaction
+          },
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString()
+        });
+
+      if (createError) {
+        console.error('❌ Erreur création transaction:', createError);
+      }
+    } else {
+      // Mettre à jour la transaction existante
       await supabase
         .from('transactions')
         .update({
           status: transaction.status,
           metadata: {
+            ...existingTransaction.metadata,
             webhook_payload: payload,
-            webhook_processed_at: new Date().toISOString()
+            webhook_processed_at: new Date().toISOString(),
+            notchpay_transaction: transaction
           },
+          updated_at: new Date().toISOString(),
           completed_at: transaction.status === 'complete' ? new Date().toISOString() : null
         })
         .eq('reference', transaction.reference);
+    }
 
-      // Si le paiement est complet, mettre à jour l'utilisateur
-      if (transaction.status === 'complete') {
-        // Trouver l'utilisateur via la transaction
-        const { data: transactionData } = await supabase
-          .from('transactions')
-          .select('user_id')
-          .eq('reference', transaction.reference)
-          .single();
+    // 2. Si le paiement est complet, mettre à jour l'utilisateur
+    if (transaction.status === 'complete' || transaction.status === 'success') {
+      console.log(`✅ Paiement réussi pour ${transaction.reference}`);
+      
+      // Trouver l'utilisateur via la transaction
+      const { data: transactionData } = await supabase
+        .from('transactions')
+        .select('user_id, metadata')
+        .eq('reference', transaction.reference)
+        .single();
 
-        if (transactionData?.user_id) {
+      if (transactionData?.user_id) {
+        const userId = transactionData.user_id;
+        
+        // Mettre à jour le profil
+        await supabase
+          .from('profiles')
+          .update({
+            is_premium: true,
+            premium_activated_at: new Date().toISOString(),
+            last_payment_date: new Date().toISOString(),
+            payment_reference: transaction.reference,
+            updated_at: new Date().toISOString()
+          })
+          .eq('id', userId);
+
+        // Créer l'abonnement
+        await supabase
+          .from('subscriptions')
+          .upsert({
+            user_id: userId,
+            plan: 'premium',
+            transaction_reference: transaction.reference,
+            status: 'active',
+            starts_at: new Date().toISOString(),
+            expires_at: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString(),
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString()
+          }, {
+            onConflict: 'user_id'
+          });
+
+        console.log(`👤 Utilisateur ${userId} mis à jour vers premium`);
+      } else {
+        console.warn(`⚠️  User ID non trouvé pour la transaction ${transaction.reference}`);
+        
+        // Essayer de récupérer l'userId depuis les metadata de NotchPay
+        const metadata = transaction.metadata || transactionData?.metadata?.notchpay_response?.metadata;
+        if (metadata?.userId) {
           await supabase
             .from('profiles')
             .update({
               is_premium: true,
               premium_activated_at: new Date().toISOString(),
               last_payment_date: new Date().toISOString(),
-              payment_reference: transaction.reference
+              payment_reference: transaction.reference,
+              updated_at: new Date().toISOString()
             })
-            .eq('id', transactionData.user_id);
+            .eq('id', metadata.userId);
         }
       }
-
-      console.log(`✅ Webhook ${event} traité pour ${transaction.reference}`);
     }
 
+    console.log(`✅ Webhook ${event} traité avec succès pour ${transaction.reference}`);
     return res.status(200).json({ 
       success: true, 
       message: "Webhook traité avec succès" 
@@ -310,13 +409,15 @@ router.post("/webhook", express.raw({ type: 'application/json' }), async (req, r
 
   } catch (err) {
     console.error("❌ Erreur webhook:", err);
+    console.error("Stack trace:", err.stack);
+    
     return res.status(500).json({
       success: false,
-      message: "Erreur lors du traitement du webhook"
+      message: "Erreur lors du traitement du webhook",
+      error: process.env.NODE_ENV === 'development' ? err.message : undefined
     });
   }
 });
-
 // 🔥 CONFIGURATION (public)
 router.get("/config", (req, res) => {
   return res.json({

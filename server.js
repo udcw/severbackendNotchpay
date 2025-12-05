@@ -12,8 +12,10 @@ app.use(cors({
   origin: ['http://localhost:8081', 'exp://*'], // Autoriser React Native
   credentials: true
 }));
+app.use('/api/payments/webhook', express.raw({ type: 'application/json' }));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+
 
 // Configuration NotchPay exportable
 const NOTCHPAY_CONFIG = {
