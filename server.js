@@ -2,7 +2,6 @@ require('dotenv').config();
 const express = require("express");
 const cors = require("cors");
 const paymentRoutes = require("./routes/payments");
-const axios = require("axios");
 
 const app = express();
 const PORT = process.env.PORT || 4000;
@@ -12,10 +11,11 @@ app.use(cors({
   origin: ['http://localhost:8081', 'exp://*'], // Autoriser React Native
   credentials: true
 }));
-app.use('/api/payments/webhook', express.raw({ type: 'application/json' }));
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
 
+// IMPORTANT: Utiliser express.text() pour le webhook
+app.use("/api/payments/webhook", express.text({ type: 'application/json' }));
+app.use(express.json()); // Pour toutes les autres routes
+app.use(express.urlencoded({ extended: true }));
 
 // Configuration NotchPay exportable
 const NOTCHPAY_CONFIG = {
@@ -27,6 +27,7 @@ const NOTCHPAY_CONFIG = {
 
 // Routes
 app.use("/api/payments", paymentRoutes);
+
 
 // Route de test
 app.get("/", (req, res) => {

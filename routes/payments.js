@@ -248,49 +248,67 @@ router.get("/transactions", authenticateUser, async (req, res) => {
 });
 
 // 🔥 WEBHOOK NOTCHPAY (public - pas d'authentification)
+// 🔥 WEBHOOK NOTCHPAY (public - pas d'authentification)
 router.post("/webhook", async (req, res) => {
-  console.log("=== 📬 WEBHOOK REÇU ===");
+  console.log("=== 🔥 WEBHOOK REÇU ===");
+  console.log("Content-Type:", req.headers['content-type']);
+  console.log("Body (type):", typeof req.body);
+  console.log("Body (raw):", req.body);
   
   try {
-    // 1. Lire le body comme JSON (Express.json() le parse déjà)
-    const payload = req.body;
-    const signature = req.headers['x-notchpay-signature'];
+    // Parse le JSON manuellement
+    let payload;
+    if (typeof req.body === 'string') {
+      try {
+        payload = JSON.parse(req.body);
+      } catch (parseError) {
+        console.error("❌ Erreur parsing JSON:", parseError);
+        return res.status(400).json({
+          success: false,
+          message: "JSON invalide reçu"
+        });
+      }
+    } else {
+      payload = req.body;
+    }
     
-    console.log("Headers reçus:", JSON.stringify(req.headers, null, 2));
-    console.log("Body reçu:", JSON.stringify(payload, null, 2));
+    console.log("✅ Payload parsé:", JSON.stringify(payload, null, 2));
+    
+    const signature = req.headers['x-notchpay-signature'];
     console.log("Signature reçue:", signature);
     
-    // 2. TEMPORAIRE : Désactiver la vérification de signature
-    // if (NOTCHPAY_CONFIG.webhookSecret && signature) {
-    //   const crypto = require('crypto');
-    //   const hmac = crypto.createHmac('sha256', NOTCHPAY_CONFIG.webhookSecret);
-    //   const digest = hmac.update(JSON.stringify(payload)).digest('hex');
-    //   
-    //   if (signature !== digest) {
-    //     console.error("❌ Signature invalide");
-    //     return res.status(401).json({ success: false, message: "Signature invalide" });
-    //   }
-    // }
+    // TEMPORAIRE: Désactiver vérification signature pour tests
+    console.log("⚠️ Vérification signature désactivée pour tests");
     
-    console.log("✅ Vérification de signature désactivée (mode test)");
-    
-    // 3. Extraire les données
-    const { event, data } = payload || {};
-    const transaction = data?.transaction;
-    
-    if (!transaction?.reference) {
-      console.error("❌ Transaction ou référence manquante");
-      return res.status(400).json({ 
-        success: false, 
-        message: "Transaction ou référence manquante",
+    // Vérifier la structure du payload
+    if (!payload || !payload.event || !payload.data) {
+      console.error("❌ Structure payload invalide:", payload);
+      return res.status(400).json({
+        success: false,
+        message: "Structure du payload invalide",
         received: payload
       });
     }
     
-    console.log(`🔄 Traitement: ${event} - Référence: ${transaction.reference}`);
-    console.log(`Status: ${transaction.status}, Montant: ${transaction.amount}`);
+    const { event, data } = payload;
+    const transaction = data?.transaction;
     
-    // 4. Chercher la transaction dans la base
+    if (!transaction || !transaction.reference) {
+      console.error("❌ Référence transaction manquante");
+      return res.status(400).json({
+        success: false,
+        message: "Référence de transaction manquante",
+        payload: payload
+      });
+    }
+    
+    console.log(`🔄 Traitement webhook: ${event}`);
+    console.log(`Référence: ${transaction.reference}`);
+    console.log(`Status: ${transaction.status}`);
+    console.log(`Montant: ${transaction.amount} ${transaction.currency}`);
+    console.log(`Metadata:`, transaction.metadata);
+    
+    // 1. Chercher ou créer la transaction dans Supabase
     const { data: existingTransaction, error: findError } = await supabase
       .from('transactions')
       .select('*')
@@ -298,14 +316,18 @@ router.post("/webhook", async (req, res) => {
       .single();
     
     if (findError) {
-      console.log(`⚠️ Transaction ${transaction.reference} non trouvée, création...`);
+      console.log(`📝 Transaction ${transaction.reference} non trouvée, création...`);
       
-      // Créer une nouvelle transaction
+      // Extraire userId des metadata
+      const userId = transaction.metadata?.userId || 
+                     payload.metadata?.userId || 
+                     'unknown-' + Date.now();
+      
       const { error: createError } = await supabase
         .from('transactions')
         .insert({
           reference: transaction.reference,
-          user_id: transaction.metadata?.userId || 'unknown',
+          user_id: userId,
           amount: transaction.amount ? transaction.amount / 100 : 0,
           currency: transaction.currency || 'XAF',
           status: transaction.status || 'pending',
@@ -320,11 +342,13 @@ router.post("/webhook", async (req, res) => {
       
       if (createError) {
         console.error("❌ Erreur création transaction:", createError);
+      } else {
+        console.log("✅ Transaction créée avec succès");
       }
     } else {
-      // Mettre à jour la transaction existante
-      console.log(`✅ Transaction trouvée, mise à jour du statut: ${transaction.status}`);
+      console.log(`✅ Transaction existante trouvée, ID: ${existingTransaction.id}`);
       
+      // Mettre à jour la transaction
       await supabase
         .from('transactions')
         .update({
@@ -333,28 +357,31 @@ router.post("/webhook", async (req, res) => {
             ...existingTransaction.metadata,
             webhook_payload: payload,
             notchpay_transaction: transaction,
-            updated_at: new Date().toISOString()
+            webhook_processed_at: new Date().toISOString()
           },
-          completed_at: transaction.status === 'complete' ? new Date().toISOString() : null,
-          updated_at: new Date().toISOString()
+          updated_at: new Date().toISOString(),
+          completed_at: transaction.status === 'complete' ? new Date().toISOString() : null
         })
         .eq('reference', transaction.reference);
     }
     
-    // 5. Si paiement réussi, mettre à jour l'utilisateur
-    if (transaction.status === 'complete' || transaction.status === 'success') {
-      console.log(`💰 Paiement réussi pour ${transaction.reference}`);
+    // 2. Si paiement réussi, mettre à jour l'utilisateur
+    const successStatuses = ['complete', 'success', 'completed'];
+    if (successStatuses.includes(transaction.status)) {
+      console.log(`💰 Paiement REUSSI pour ${transaction.reference}`);
       
-      // Récupérer l'user_id depuis les metadata ou la transaction existante
+      // Chercher l'utilisateur
       let userId = transaction.metadata?.userId;
       
       if (!userId && existingTransaction) {
         userId = existingTransaction.user_id;
       }
       
-      if (userId && userId !== 'unknown') {
+      if (userId && !userId.startsWith('unknown')) {
+        console.log(`👤 Mise à jour utilisateur ${userId} vers PREMIUM`);
+        
         // Mettre à jour le profil
-        await supabase
+        const { error: updateError } = await supabase
           .from('profiles')
           .update({
             is_premium: true,
@@ -365,10 +392,14 @@ router.post("/webhook", async (req, res) => {
           })
           .eq('id', userId);
         
-        console.log(`👤 Utilisateur ${userId} mis à jour vers PREMIUM`);
+        if (updateError) {
+          console.error("❌ Erreur mise à jour profil:", updateError);
+        } else {
+          console.log("✅ Profil mis à jour avec succès");
+        }
         
         // Créer l'abonnement
-        await supabase
+        const { error: subError } = await supabase
           .from('subscriptions')
           .upsert({
             user_id: userId,
@@ -377,34 +408,77 @@ router.post("/webhook", async (req, res) => {
             status: 'active',
             starts_at: new Date().toISOString(),
             expires_at: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString(),
+            created_at: new Date().toISOString(),
             updated_at: new Date().toISOString()
           }, {
             onConflict: 'user_id, transaction_reference'
           });
+        
+        if (subError) {
+          console.error("❌ Erreur création abonnement:", subError);
+        } else {
+          console.log("✅ Abonnement créé avec succès");
+        }
       } else {
-        console.warn(`⚠️ Impossible de trouver userId pour la transaction ${transaction.reference}`);
+        console.log(`⚠️  UserId non valide ou inconnu: ${userId}`);
       }
     }
     
-    console.log(`✅ Webhook traité avec succès pour ${transaction.reference}`);
+    console.log(`✅ Webhook traité avec succès!`);
     
-    return res.status(200).json({ 
-      success: true, 
+    return res.status(200).json({
+      success: true,
       message: "Webhook traité avec succès",
-      transaction: transaction.reference,
-      status: transaction.status
+      reference: transaction.reference,
+      status: transaction.status,
+      user_upgraded: successStatuses.includes(transaction.status)
     });
     
   } catch (err) {
-    console.error("❌ ERREUR WEBHOOK:", err);
+    console.error("❌ ERREUR CRITIQUE WEBHOOK:", err);
     console.error("Stack:", err.stack);
     
     return res.status(500).json({
       success: false,
-      message: "Erreur serveur lors du traitement du webhook",
+      message: "Erreur serveur interne",
       error: err.message
     });
   }
+});
+// 🔥 ROUTE DE TEST WEBHOOK (pour débogage)
+router.get("/test-webhook", (req, res) => {
+  const testPayload = {
+    event: "payment.complete",
+    data: {
+      transaction: {
+        reference: "KAMERUN-TEST-" + Date.now(),
+        status: "complete",
+        amount: 5000,
+        currency: "XAF",
+        metadata: {
+          userId: "test-user-123",
+          userEmail: "test@example.com",
+          plan: "premium"
+        }
+      }
+    }
+  };
+  
+  return res.json({
+    message: "Test webhook payload",
+    payload: testPayload,
+    curl_command: `curl -X POST https://severbackendnotchpay.onrender.com/api/payments/webhook -H "Content-Type: application/json" -d '${JSON.stringify(testPayload)}'`
+  });
+});
+
+// 🔥 ROUTE PING (vérifier que l'API fonctionne)
+router.get("/ping", (req, res) => {
+  return res.json({
+    success: true,
+    message: "Payments API is working!",
+    timestamp: new Date().toISOString(),
+    webhook_endpoint: "POST /api/payments/webhook"
+  });
 });
 // 🔥 CONFIGURATION (public)
 router.get("/config", (req, res) => {
