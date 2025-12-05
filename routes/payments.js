@@ -480,6 +480,170 @@ router.get("/ping", (req, res) => {
     webhook_endpoint: "POST /api/payments/webhook"
   });
 });
+// Récupérer ou créer les infos utilisateur
+let userProfile;
+
+// D'abord, essayez de récupérer le profil existant
+const { data: existingProfile, error: profileError } = await supabase
+  .from('profiles')
+  .select('*')
+  .eq('id', userId)
+  .single();
+
+if (profileError || !existingProfile) {
+  console.log('📝 Création du profil pour l\'utilisateur:', userId);
+  
+  // Créer un profil si il n'existe pas
+  const newProfileData = {
+    id: userId,
+    email: req.user.email,
+    first_name: req.user.user_metadata?.first_name || req.user.user_metadata?.full_name?.split(' ')[0] || 'Utilisateur',
+    last_name: req.user.user_metadata?.last_name || req.user.user_metadata?.full_name?.split(' ').slice(1).join(' ') || 'Kamerun',
+    is_premium: false,
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString()
+  };
+
+  const { data: newProfile, error: createError } = await supabase
+    .from('profiles')
+    .upsert(newProfileData, { onConflict: 'id' })
+    .select()
+    .single();
+
+  if (createError) {
+    console.error('❌ Erreur création profil:', createError);
+    // Utiliser des valeurs par défaut
+    userProfile = {
+      id: userId,
+      email: req.user.email,
+      first_name: 'Utilisateur',
+      last_name: 'Kamerun',
+      phone: null
+    };
+  } else {
+    userProfile = newProfile;
+    console.log('✅ Profil créé avec succès');
+  }
+} else {
+  userProfile = existingProfile;
+  console.log('✅ Profil existant trouvé');
+}
+// 🔥 CRÉER/VÉRIFIER UN PROFIL (pour débogage)
+router.post("/ensure-profile", authenticateUser, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    
+    // Vérifier si le profil existe
+    const { data: existingProfile, error: profileError } = await supabase
+      .from('profiles')
+      .select('*')
+      .eq('id', userId)
+      .single();
+    
+    if (profileError || !existingProfile) {
+      // Créer le profil
+      const newProfileData = {
+        id: userId,
+        email: req.user.email,
+        first_name: req.user.user_metadata?.first_name || req.user.user_metadata?.full_name?.split(' ')[0] || 'Utilisateur',
+        last_name: req.user.user_metadata?.last_name || req.user.user_metadata?.full_name?.split(' ').slice(1).join(' ') || 'Kamerun',
+        is_premium: false,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString()
+      };
+      
+      const { data: newProfile, error: createError } = await supabase
+        .from('profiles')
+        .upsert(newProfileData, { onConflict: 'id' })
+        .select()
+        .single();
+      
+      if (createError) {
+        throw createError;
+      }
+      
+      return res.json({
+        success: true,
+        message: "Profil créé avec succès",
+        profile: newProfile,
+        created: true
+      });
+    }
+    
+    return res.json({
+      success: true,
+      message: "Profil existe déjà",
+      profile: existingProfile,
+      created: false
+    });
+    
+  } catch (err) {
+    console.error("❌ Erreur création profil:", err);
+    return res.status(500).json({
+      success: false,
+      message: "Erreur lors de la création du profil",
+      error: err.message
+    });
+  }
+});
+// 🔥 CRÉER/VÉRIFIER UN PROFIL (pour débogage)
+router.post("/ensure-profile", authenticateUser, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    
+    // Vérifier si le profil existe
+    const { data: existingProfile, error: profileError } = await supabase
+      .from('profiles')
+      .select('*')
+      .eq('id', userId)
+      .single();
+    
+    if (profileError || !existingProfile) {
+      // Créer le profil
+      const newProfileData = {
+        id: userId,
+        email: req.user.email,
+        first_name: req.user.user_metadata?.first_name || req.user.user_metadata?.full_name?.split(' ')[0] || 'Utilisateur',
+        last_name: req.user.user_metadata?.last_name || req.user.user_metadata?.full_name?.split(' ').slice(1).join(' ') || 'Kamerun',
+        is_premium: false,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString()
+      };
+      
+      const { data: newProfile, error: createError } = await supabase
+        .from('profiles')
+        .upsert(newProfileData, { onConflict: 'id' })
+        .select()
+        .single();
+      
+      if (createError) {
+        throw createError;
+      }
+      
+      return res.json({
+        success: true,
+        message: "Profil créé avec succès",
+        profile: newProfile,
+        created: true
+      });
+    }
+    
+    return res.json({
+      success: true,
+      message: "Profil existe déjà",
+      profile: existingProfile,
+      created: false
+    });
+    
+  } catch (err) {
+    console.error("❌ Erreur création profil:", err);
+    return res.status(500).json({
+      success: false,
+      message: "Erreur lors de la création du profil",
+      error: err.message
+    });
+  }
+});
 // 🔥 CONFIGURATION (public)
 router.get("/config", (req, res) => {
   return res.json({
