@@ -5,7 +5,7 @@ const { NOTCHPAY_CONFIG, authenticateUser, supabase } = require("../middleware/a
 
 const router = express.Router();
 
-// 🔥 INITIER UN PAIEMENT (version CORRIGÉE)
+// 🔥 INITIER UN PAIEMENT (version CORRIGÉE pour l'URL)
 router.post("/initialize", authenticateUser, async (req, res) => {
   try {
     const { amount, phone, description = "Abonnement Premium Kamerun News" } = req.body;
@@ -21,56 +21,17 @@ router.post("/initialize", authenticateUser, async (req, res) => {
 
     console.log("🆔 User ID:", userId);
     console.log("📧 User email:", req.user.email);
-    console.log("👤 User metadata:", req.user.user_metadata);
 
-    // SOLUTION: Récupérer OU créer le profil
-    let userProfile;
-    
-    // D'abord essayer de récupérer le profil
-    const { data: existingProfile, error: profileError } = await supabase
-      .from('profiles')
-      .select('*')
-      .eq('id', userId)
-      .single();
+    // SOLUTION SIMPLE: Utiliser directement les données de l'utilisateur depuis le JWT
+    const userProfile = {
+      id: userId,
+      email: req.user.email,
+      first_name: req.user.user_metadata?.first_name || req.user.user_metadata?.full_name?.split(' ')[0] || 'Utilisateur',
+      last_name: req.user.user_metadata?.last_name || req.user.user_metadata?.full_name?.split(' ').slice(1).join(' ') || 'Kamerun',
+      phone: phone || null
+    };
 
-    if (profileError || !existingProfile) {
-      console.log('📝 Profil non trouvé, création en cours...');
-      
-      // Créer un profil minimal
-      const newProfileData = {
-        id: userId,
-        email: req.user.email,
-        first_name: req.user.user_metadata?.first_name || req.user.user_metadata?.full_name?.split(' ')[0] || 'Utilisateur',
-        last_name: req.user.user_metadata?.last_name || req.user.user_metadata?.full_name?.split(' ').slice(1).join(' ') || 'Kamerun',
-        is_premium: false,
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString()
-      };
-
-      const { data: newProfile, error: createError } = await supabase
-        .from('profiles')
-        .upsert(newProfileData, { onConflict: 'id' })
-        .select()
-        .single();
-
-      if (createError) {
-        console.error('❌ Erreur création profil:', createError);
-        // Utiliser des valeurs par défaut
-        userProfile = {
-          id: userId,
-          email: req.user.email,
-          first_name: 'Utilisateur',
-          last_name: 'Kamerun',
-          phone: null
-        };
-      } else {
-        userProfile = newProfile;
-        console.log('✅ Profil créé avec succès');
-      }
-    } else {
-      userProfile = existingProfile;
-      console.log('✅ Profil existant trouvé:', userProfile);
-    }
+    console.log('👤 Utilisateur (depuis JWT):', userProfile);
 
     // Préparer les données NotchPay
     const reference = `KAMERUN-${userId}-${Date.now()}`;
@@ -81,16 +42,18 @@ router.post("/initialize", authenticateUser, async (req, res) => {
       currency: "XAF",
       description: description,
       reference: reference,
-      email: req.user.email || userProfile.email,
+      email: req.user.email,
       customer: {
         name: `${userProfile.first_name} ${userProfile.last_name}`,
-        email: req.user.email || userProfile.email,
-        phone: phone || userProfile.phone || ''
+        email: req.user.email,
+        phone: userProfile.phone || ''
       },
       callback_url: NOTCHPAY_CONFIG.callbackUrl,
       metadata: {
         userId: userId,
         userEmail: req.user.email,
+        userFirstName: userProfile.first_name,
+        userLastName: userProfile.last_name,
         plan: "premium",
         type: "subscription",
         app: "Kamerun News"
@@ -113,7 +76,43 @@ router.post("/initialize", authenticateUser, async (req, res) => {
       }
     );
 
-    console.log("✅ Réponse NotchPay:", response.data);
+    console.log("✅ Réponse NotchPay complète:", JSON.stringify(response.data, null, 2));
+
+    // DEBUG: Vérifier la structure de la réponse
+    console.log("🔍 Structure réponse NotchPay:");
+    console.log("- transaction:", response.data.transaction);
+    console.log("- authorization_url:", response.data.transaction?.authorization_url);
+    console.log("- checkout_url:", response.data.checkout_url);
+    console.log("- links:", response.data.links);
+
+    // Extraire l'URL de paiement (différentes possibilités selon NotchPay)
+    let paymentUrl = null;
+    
+    // Essayer différentes clés possibles
+    if (response.data.transaction?.authorization_url) {
+      paymentUrl = response.data.transaction.authorization_url;
+    } else if (response.data.authorization_url) {
+      paymentUrl = response.data.authorization_url;
+    } else if (response.data.checkout_url) {
+      paymentUrl = response.data.checkout_url;
+    } else if (response.data.links?.authorization_url) {
+      paymentUrl = response.data.links.authorization_url;
+    } else if (response.data.links?.checkout) {
+      paymentUrl = response.data.links.checkout;
+    } else if (response.data.url) {
+      paymentUrl = response.data.url;
+    }
+
+    console.log("🔗 URL de paiement extraite:", paymentUrl);
+
+    if (!paymentUrl) {
+      console.error("❌ Aucune URL de paiement trouvée dans la réponse NotchPay");
+      return res.status(500).json({
+        success: false,
+        message: "Erreur: aucune URL de paiement reçue de NotchPay",
+        notchpay_response: response.data
+      });
+    }
 
     // Enregistrer la transaction en base
     const { data: transaction, error: dbError } = await supabase
@@ -127,8 +126,7 @@ router.post("/initialize", authenticateUser, async (req, res) => {
         payment_method: 'notchpay',
         metadata: {
           notchpay_response: response.data,
-          authorization_url: response.data.transaction?.authorization_url,
-          user_profile: userProfile
+          payment_url: paymentUrl
         }
       })
       .select()
@@ -144,24 +142,33 @@ router.post("/initialize", authenticateUser, async (req, res) => {
       success: true,
       message: "Paiement initialisé avec succès",
       data: {
-        authorization_url: response.data.transaction?.authorization_url,
+        authorization_url: paymentUrl,
         reference: reference,
         transaction_id: transaction?.id,
-        checkout_url: response.data.transaction?.authorization_url
+        checkout_url: paymentUrl,
+        debug_info: {
+          response_structure: Object.keys(response.data)
+        }
       }
     });
 
   } catch (err) {
-    console.error("❌ Erreur NotchPay:", {
+    console.error("❌ Erreur NotchPay DÉTAILLÉE:", {
       message: err.message,
       response: err.response?.data,
-      status: err.response?.status
+      status: err.response?.status,
+      config: {
+        url: err.config?.url,
+        method: err.config?.method,
+        data: err.config?.data
+      }
     });
     
     return res.status(err.response?.status || 500).json({
       success: false,
       message: err.response?.data?.message || "Erreur lors de l'initialisation du paiement",
-      error: process.env.NODE_ENV === 'development' ? err.message : undefined
+      error: err.message,
+      debug: err.response?.data
     });
   }
 });
