@@ -1,31 +1,76 @@
-require('dotenv').config(); // Charger les variables .env
+require('dotenv').config();
 const express = require("express");
 const cors = require("cors");
 const paymentRoutes = require("./routes/payments");
+const axios = require("axios");
 
 const app = express();
 const PORT = process.env.PORT || 4000;
 
-// 👉 Exporté AVANT d'utiliser server.js dans payments.js
-module.exports = {
+// Middlewares
+app.use(cors({
+  origin: ['http://localhost:8081', 'exp://*'], // Autoriser React Native
+  credentials: true
+}));
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+
+// Configuration NotchPay exportable
+const NOTCHPAY_CONFIG = {
   publicKey: process.env.NOTCHPAY_PUBLIC_KEY,
   secretKey: process.env.NOTCHPAY_SECRET_KEY,
-  baseUrl: process.env.NOTCHPAY_BASE_URL || "https://api.notchpay.co"
+  baseUrl: process.env.NOTCHPAY_BASE_URL || "https://api.notchpay.co",
+  webhookSecret: process.env.NOTCHPAY_WEBHOOK_SECRET
 };
-
-// Middlewares
-app.use(cors());
-app.use(express.json());
 
 // Routes
 app.use("/api/payments", paymentRoutes);
 
-// Test route
+// Route de test
 app.get("/", (req, res) => {
-  res.json({ message: "Serveur NotchPay en marche!" });
+  res.json({ 
+    message: "Serveur NotchPay en marche!",
+    version: "1.0.0",
+    status: "OK",
+    timestamp: new Date().toISOString(),
+    notchpay: {
+      configured: !!process.env.NOTCHPAY_PUBLIC_KEY,
+      baseUrl: NOTCHPAY_CONFIG.baseUrl
+    }
+  });
 });
 
-// Start server
-app.listen(PORT, () => {
-  console.log(`Serveur démarré sur le port ${PORT}`);
+// Route de vérification de santé
+app.get("/health", (req, res) => {
+  res.status(200).json({
+    status: "healthy",
+    uptime: process.uptime(),
+    timestamp: new Date().toISOString()
+  });
 });
+
+// Gestion des erreurs
+app.use((err, req, res, next) => {
+  console.error('Erreur serveur:', err);
+  res.status(500).json({
+    success: false,
+    message: 'Erreur interne du serveur',
+    error: process.env.NODE_ENV === 'production' ? undefined : err.message
+  });
+});
+
+// Export pour les tests ou autres utilisations
+module.exports = {
+  NOTCHPAY_CONFIG,
+  app
+};
+
+// Démarrer le serveur uniquement si exécuté directement
+if (require.main === module) {
+  app.listen(PORT, () => {
+    console.log(`Serveur démarré sur le port ${PORT}`);
+    console.log(`URL: http://localhost:${PORT}`);
+    console.log(`NotchPay configuré: ${!!process.env.NOTCHPAY_PUBLIC_KEY}`);
+    console.log(`CORS autorisé pour: localhost:8081, exp://*`);
+  });
+}
