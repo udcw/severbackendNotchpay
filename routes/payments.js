@@ -1,6 +1,7 @@
 const express = require("express");
 const axios = require("axios");
-const { NOTCHPAY_CONFIG, authenticateUser, supabase } = require("./auth");
+const auth = require('../middleware/auth');
+const { NOTCHPAY_CONFIG, authenticateUser, supabase } = require("../middleware/auth");
 
 const router = express.Router();
 

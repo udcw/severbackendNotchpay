@@ -1,5 +1,7 @@
 require("dotenv").config();
 
+
+
 // Configuration de l'authentification Supabase pour vérifier les tokens
 const { createClient } = require('@supabase/supabase-js');
 
