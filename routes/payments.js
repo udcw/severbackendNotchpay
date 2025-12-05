@@ -5,7 +5,7 @@ const { NOTCHPAY_CONFIG, authenticateUser, supabase } = require("../middleware/a
 
 const router = express.Router();
 
-// 🔥 INITIER UN PAIEMENT (protégé par authentification)
+// 🔥 INITIER UN PAIEMENT (version CORRIGÉE)
 router.post("/initialize", authenticateUser, async (req, res) => {
   try {
     const { amount, phone, description = "Abonnement Premium Kamerun News" } = req.body;
@@ -19,24 +19,62 @@ router.post("/initialize", authenticateUser, async (req, res) => {
       });
     }
 
-    // Récupérer les infos utilisateur
-    const { data: userProfile, error: profileError } = await supabase
+    console.log("🆔 User ID:", userId);
+    console.log("📧 User email:", req.user.email);
+    console.log("👤 User metadata:", req.user.user_metadata);
+
+    // SOLUTION: Récupérer OU créer le profil
+    let userProfile;
+    
+    // D'abord essayer de récupérer le profil
+    const { data: existingProfile, error: profileError } = await supabase
       .from('profiles')
       .select('*')
       .eq('id', userId)
       .single();
 
-    if (profileError) {
-      console.error('Erreur profil:', profileError);
-      return res.status(400).json({
-        success: false,
-        message: "Impossible de récupérer le profil utilisateur"
-      });
+    if (profileError || !existingProfile) {
+      console.log('📝 Profil non trouvé, création en cours...');
+      
+      // Créer un profil minimal
+      const newProfileData = {
+        id: userId,
+        email: req.user.email,
+        first_name: req.user.user_metadata?.first_name || req.user.user_metadata?.full_name?.split(' ')[0] || 'Utilisateur',
+        last_name: req.user.user_metadata?.last_name || req.user.user_metadata?.full_name?.split(' ').slice(1).join(' ') || 'Kamerun',
+        is_premium: false,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString()
+      };
+
+      const { data: newProfile, error: createError } = await supabase
+        .from('profiles')
+        .upsert(newProfileData, { onConflict: 'id' })
+        .select()
+        .single();
+
+      if (createError) {
+        console.error('❌ Erreur création profil:', createError);
+        // Utiliser des valeurs par défaut
+        userProfile = {
+          id: userId,
+          email: req.user.email,
+          first_name: 'Utilisateur',
+          last_name: 'Kamerun',
+          phone: null
+        };
+      } else {
+        userProfile = newProfile;
+        console.log('✅ Profil créé avec succès');
+      }
+    } else {
+      userProfile = existingProfile;
+      console.log('✅ Profil existant trouvé:', userProfile);
     }
 
     // Préparer les données NotchPay
     const reference = `KAMERUN-${userId}-${Date.now()}`;
-    const amountInCents = Math.round(amount * 100); // NotchPay utilise les centimes
+    const amountInCents = Math.round(amount * 100);
 
     const payload = {
       amount: amountInCents,
@@ -47,7 +85,7 @@ router.post("/initialize", authenticateUser, async (req, res) => {
       customer: {
         name: `${userProfile.first_name} ${userProfile.last_name}`,
         email: req.user.email || userProfile.email,
-        phone: phone || userProfile.phone
+        phone: phone || userProfile.phone || ''
       },
       callback_url: NOTCHPAY_CONFIG.callbackUrl,
       metadata: {
@@ -59,7 +97,7 @@ router.post("/initialize", authenticateUser, async (req, res) => {
       }
     };
 
-    console.log("Payload NotchPay:", JSON.stringify(payload, null, 2));
+    console.log("📤 Payload NotchPay:", JSON.stringify(payload, null, 2));
 
     // Appeler l'API NotchPay
     const response = await axios.post(
@@ -71,7 +109,7 @@ router.post("/initialize", authenticateUser, async (req, res) => {
           "Content-Type": "application/json",
           "Accept": "application/json"
         },
-        timeout: 10000 // Timeout de 10 secondes
+        timeout: 15000
       }
     );
 
@@ -89,14 +127,17 @@ router.post("/initialize", authenticateUser, async (req, res) => {
         payment_method: 'notchpay',
         metadata: {
           notchpay_response: response.data,
-          authorization_url: response.data.transaction?.authorization_url
+          authorization_url: response.data.transaction?.authorization_url,
+          user_profile: userProfile
         }
       })
       .select()
       .single();
 
     if (dbError) {
-      console.error('Erreur DB:', dbError);
+      console.error('❌ Erreur DB transaction:', dbError);
+    } else {
+      console.log('✅ Transaction enregistrée:', transaction?.id);
     }
 
     return res.json({
@@ -247,7 +288,6 @@ router.get("/transactions", authenticateUser, async (req, res) => {
   }
 });
 
-// 🔥 WEBHOOK NOTCHPAY (public - pas d'authentification)
 // 🔥 WEBHOOK NOTCHPAY (public - pas d'authentification)
 router.post("/webhook", async (req, res) => {
   console.log("=== 🔥 WEBHOOK REÇU ===");
@@ -445,6 +485,7 @@ router.post("/webhook", async (req, res) => {
     });
   }
 });
+
 // 🔥 ROUTE DE TEST WEBHOOK (pour débogage)
 router.get("/test-webhook", (req, res) => {
   const testPayload = {
@@ -480,54 +521,7 @@ router.get("/ping", (req, res) => {
     webhook_endpoint: "POST /api/payments/webhook"
   });
 });
-// Récupérer ou créer les infos utilisateur
-let userProfile;
 
-// D'abord, essayez de récupérer le profil existant
-const { data: existingProfile, error: profileError } = await supabase
-  .from('profiles')
-  .select('*')
-  .eq('id', userId)
-  .single();
-
-if (profileError || !existingProfile) {
-  console.log('📝 Création du profil pour l\'utilisateur:', userId);
-  
-  // Créer un profil si il n'existe pas
-  const newProfileData = {
-    id: userId,
-    email: req.user.email,
-    first_name: req.user.user_metadata?.first_name || req.user.user_metadata?.full_name?.split(' ')[0] || 'Utilisateur',
-    last_name: req.user.user_metadata?.last_name || req.user.user_metadata?.full_name?.split(' ').slice(1).join(' ') || 'Kamerun',
-    is_premium: false,
-    created_at: new Date().toISOString(),
-    updated_at: new Date().toISOString()
-  };
-
-  const { data: newProfile, error: createError } = await supabase
-    .from('profiles')
-    .upsert(newProfileData, { onConflict: 'id' })
-    .select()
-    .single();
-
-  if (createError) {
-    console.error('❌ Erreur création profil:', createError);
-    // Utiliser des valeurs par défaut
-    userProfile = {
-      id: userId,
-      email: req.user.email,
-      first_name: 'Utilisateur',
-      last_name: 'Kamerun',
-      phone: null
-    };
-  } else {
-    userProfile = newProfile;
-    console.log('✅ Profil créé avec succès');
-  }
-} else {
-  userProfile = existingProfile;
-  console.log('✅ Profil existant trouvé');
-}
 // 🔥 CRÉER/VÉRIFIER UN PROFIL (pour débogage)
 router.post("/ensure-profile", authenticateUser, async (req, res) => {
   try {
@@ -586,64 +580,7 @@ router.post("/ensure-profile", authenticateUser, async (req, res) => {
     });
   }
 });
-// 🔥 CRÉER/VÉRIFIER UN PROFIL (pour débogage)
-router.post("/ensure-profile", authenticateUser, async (req, res) => {
-  try {
-    const userId = req.user.id;
-    
-    // Vérifier si le profil existe
-    const { data: existingProfile, error: profileError } = await supabase
-      .from('profiles')
-      .select('*')
-      .eq('id', userId)
-      .single();
-    
-    if (profileError || !existingProfile) {
-      // Créer le profil
-      const newProfileData = {
-        id: userId,
-        email: req.user.email,
-        first_name: req.user.user_metadata?.first_name || req.user.user_metadata?.full_name?.split(' ')[0] || 'Utilisateur',
-        last_name: req.user.user_metadata?.last_name || req.user.user_metadata?.full_name?.split(' ').slice(1).join(' ') || 'Kamerun',
-        is_premium: false,
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString()
-      };
-      
-      const { data: newProfile, error: createError } = await supabase
-        .from('profiles')
-        .upsert(newProfileData, { onConflict: 'id' })
-        .select()
-        .single();
-      
-      if (createError) {
-        throw createError;
-      }
-      
-      return res.json({
-        success: true,
-        message: "Profil créé avec succès",
-        profile: newProfile,
-        created: true
-      });
-    }
-    
-    return res.json({
-      success: true,
-      message: "Profil existe déjà",
-      profile: existingProfile,
-      created: false
-    });
-    
-  } catch (err) {
-    console.error("❌ Erreur création profil:", err);
-    return res.status(500).json({
-      success: false,
-      message: "Erreur lors de la création du profil",
-      error: err.message
-    });
-  }
-});
+
 // 🔥 CONFIGURATION (public)
 router.get("/config", (req, res) => {
   return res.json({
