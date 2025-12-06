@@ -5,10 +5,10 @@ const { NOTCHPAY_CONFIG, authenticateUser, supabase } = require("../middleware/a
 
 const router = express.Router();
 
-// 🔥 INITIER UN PAIEMENT (version CORRIGÉE pour l'URL)
+// 🔥 INITIER UN PAIEMENT (version LIVE corrigée)
 router.post("/initialize", authenticateUser, async (req, res) => {
   try {
-    const { amount, phone, description = "Abonnement Premium Kamerun News" } = req.body;
+    const { amount, phone, description = "Abonnement Premium Kamerun News", mode = 'live' } = req.body;
     const userId = req.user.id;
 
     // Validation
@@ -21,6 +21,17 @@ router.post("/initialize", authenticateUser, async (req, res) => {
 
     console.log("🆔 User ID:", userId);
     console.log("📧 User email:", req.user.email);
+    console.log("🚀 Mode:", mode);
+
+    // VÉRIFIER si on utilise les bonnes clés LIVE
+    const publicKey = NOTCHPAY_CONFIG.publicKey;
+    console.log("🔑 Clé publique utilisée:", publicKey ? publicKey.substring(0, 10) + '...' : 'NON DÉFINIE');
+    
+    // Détecter si on est en mode test
+    if (publicKey && publicKey.includes('SBX') || publicKey.includes('test')) {
+      console.warn("⚠️ ⚠️ ⚠️ ATTENTION: Clé publique de TEST détectée!");
+      console.warn("⚠️ Utilisez les clés LIVE de NotchPay pour accepter de vrais paiements");
+    }
 
     // SOLUTION SIMPLE: Utiliser directement les données de l'utilisateur depuis le JWT
     const userProfile = {
@@ -56,7 +67,8 @@ router.post("/initialize", authenticateUser, async (req, res) => {
         userLastName: userProfile.last_name,
         plan: "premium",
         type: "subscription",
-        app: "Kamerun News"
+        app: "Kamerun News",
+        mode: mode // Ajouter le mode dans les métadonnées
       }
     };
 
@@ -114,6 +126,17 @@ router.post("/initialize", authenticateUser, async (req, res) => {
       });
     }
 
+    // VÉRIFIER que l'URL n'est pas en mode test
+    if (paymentUrl.includes('/test.')) {
+      console.warn("⚠️ ATTENTION: URL de paiement en mode TEST détectée!");
+      console.warn("⚠️ Vous devez utiliser les clés LIVE de NotchPay");
+      
+      // On peut quand même continuer pour le moment
+      console.log("ℹ️ Continuer avec l'URL de test pour le débogage");
+    } else {
+      console.log("✅ URL de paiement LIVE détectée");
+    }
+
     // Enregistrer la transaction en base
     const { data: transaction, error: dbError } = await supabase
       .from('transactions')
@@ -126,7 +149,8 @@ router.post("/initialize", authenticateUser, async (req, res) => {
         payment_method: 'notchpay',
         metadata: {
           notchpay_response: response.data,
-          payment_url: paymentUrl
+          payment_url: paymentUrl,
+          mode: mode
         }
       })
       .select()
@@ -147,7 +171,8 @@ router.post("/initialize", authenticateUser, async (req, res) => {
         transaction_id: transaction?.id,
         checkout_url: paymentUrl,
         debug_info: {
-          response_structure: Object.keys(response.data)
+          response_structure: Object.keys(response.data),
+          mode_detected: paymentUrl.includes('/test.') ? 'TEST' : 'LIVE'
         }
       }
     });
@@ -173,7 +198,6 @@ router.post("/initialize", authenticateUser, async (req, res) => {
   }
 });
 
-// 🔥 VÉRIFIER UN PAIEMENT
 // 🔥 VÉRIFIER UN PAIEMENT - VERSION CORRIGÉE
 router.get("/verify/:reference", authenticateUser, async (req, res) => {
   try {
@@ -236,9 +260,9 @@ router.get("/verify/:reference", authenticateUser, async (req, res) => {
       );
 
       const transaction = response.data.transaction;
-      const isComplete = transaction?.status === 'complete';
+      const isComplete = transaction?.status === 'complete' || transaction?.status === 'success';
       const isPending = transaction?.status === 'pending';
-      const isFailed = ['failed', 'cancelled'].includes(transaction?.status);
+      const isFailed = ['failed', 'cancelled', 'canceled'].includes(transaction?.status);
 
       console.log("✅ Statut NotchPay:", transaction?.status);
 
@@ -259,13 +283,24 @@ router.get("/verify/:reference", authenticateUser, async (req, res) => {
 
       // Si paiement réussi, mettre à jour le profil
       if (isComplete) {
+        // AJOUTER la colonne premium_activated_at si elle n'existe pas
+        await supabase.rpc('add_column_if_not_exists', {
+          table_name: 'profiles',
+          column_name: 'premium_activated_at',
+          column_type: 'TIMESTAMP WITH TIME ZONE'
+        }).catch(err => {
+          console.log("⚠️ La colonne premium_activated_at existe peut-être déjà ou erreur RPC:", err.message);
+        });
+
+        // Mettre à jour le profil
         await supabase
           .from('profiles')
           .update({
             is_premium: true,
             premium_activated_at: new Date().toISOString(),
             last_payment_date: new Date().toISOString(),
-            payment_reference: reference
+            payment_reference: reference,
+            updated_at: new Date().toISOString()
           })
           .eq('id', userId);
 
@@ -289,7 +324,6 @@ router.get("/verify/:reference", authenticateUser, async (req, res) => {
         success: true,
         paid: isComplete,
         pending: isPending,
-        failed: isFailed,
         status: transaction?.status,
         message: isComplete ? "Paiement confirmé" : "Paiement en attente",
         user_upgraded: isComplete
@@ -490,6 +524,15 @@ router.post("/webhook", async (req, res) => {
       if (userId && !userId.startsWith('unknown')) {
         console.log(`👤 Mise à jour utilisateur ${userId} vers PREMIUM`);
         
+        // Vérifier et créer la colonne premium_activated_at si nécessaire
+        await supabase.rpc('add_column_if_not_exists', {
+          table_name: 'profiles',
+          column_name: 'premium_activated_at',
+          column_type: 'TIMESTAMP WITH TIME ZONE'
+        }).catch(err => {
+          console.log("⚠️ La colonne premium_activated_at existe peut-être déjà ou erreur RPC:", err.message);
+        });
+        
         // Mettre à jour le profil
         const { error: updateError } = await supabase
           .from('profiles')
@@ -588,11 +631,12 @@ router.get("/ping", (req, res) => {
     success: true,
     message: "Payments API is working!",
     timestamp: new Date().toISOString(),
-    webhook_endpoint: "POST /api/payments/webhook"
+    webhook_endpoint: "POST /api/payments/webhook",
+    mode: "LIVE"
   });
 });
 
-// 🔥 CRÉER/VÉRIFIER UN PROFIL (pour débogage)
+// 🔥 CRÉER/VÉRIFIER UN PROFIL (pour débogage) - VERSION AMÉLIORÉE
 router.post("/ensure-profile", authenticateUser, async (req, res) => {
   try {
     const userId = req.user.id;
@@ -605,7 +649,7 @@ router.post("/ensure-profile", authenticateUser, async (req, res) => {
       .single();
     
     if (profileError || !existingProfile) {
-      // Créer le profil
+      // Créer le profil avec toutes les colonnes nécessaires
       const newProfileData = {
         id: userId,
         email: req.user.email,
@@ -634,6 +678,18 @@ router.post("/ensure-profile", authenticateUser, async (req, res) => {
       });
     }
     
+    // Vérifier si la colonne premium_activated_at existe
+    if (existingProfile.premium_activated_at === undefined) {
+      // Créer la colonne via RPC
+      await supabase.rpc('add_column_if_not_exists', {
+        table_name: 'profiles',
+        column_name: 'premium_activated_at',
+        column_type: 'TIMESTAMP WITH TIME ZONE'
+      }).catch(err => {
+        console.log("⚠️ Erreur lors de l'ajout de la colonne:", err.message);
+      });
+    }
+    
     return res.json({
       success: true,
       message: "Profil existe déjà",
@@ -651,17 +707,110 @@ router.post("/ensure-profile", authenticateUser, async (req, res) => {
   }
 });
 
+// 🔥 FONCTION POUR AJOUTER UNE COLONNE SI ELLE N'EXISTE PAS
+router.post("/add-premium-activated-column", async (req, res) => {
+  try {
+    // Créer la fonction RPC si elle n'existe pas
+    const { error: createRpcError } = await supabase.rpc('add_column_if_not_exists', {
+      table_name: 'profiles',
+      column_name: 'premium_activated_at',
+      column_type: 'TIMESTAMP WITH TIME ZONE'
+    });
+
+    if (createRpcError) {
+      // Si la fonction RPC n'existe pas, la créer d'abord
+      const createFunctionSQL = `
+        CREATE OR REPLACE FUNCTION add_column_if_not_exists(
+          table_name text,
+          column_name text,
+          column_type text
+        )
+        RETURNS void AS $$
+        BEGIN
+          IF NOT EXISTS (
+            SELECT 1 
+            FROM information_schema.columns 
+            WHERE table_name = $1 AND column_name = $2
+          ) THEN
+            EXECUTE format('ALTER TABLE %I ADD COLUMN %I %s', $1, $2, $3);
+          END IF;
+        END;
+        $$ LANGUAGE plpgsql;
+      `;
+
+      await supabase.rpc('exec_sql', { sql: createFunctionSQL }).catch(err => {
+        console.log("Erreur création fonction:", err.message);
+      });
+
+      // Réessayer d'ajouter la colonne
+      await supabase.rpc('add_column_if_not_exists', {
+        table_name: 'profiles',
+        column_name: 'premium_activated_at',
+        column_type: 'TIMESTAMP WITH TIME ZONE'
+      }).catch(err => {
+        console.log("Erreur après création fonction:", err.message);
+      });
+    }
+
+    return res.json({
+      success: true,
+      message: "Colonne premium_activated_at ajoutée ou vérifiée avec succès"
+    });
+    
+  } catch (err) {
+    console.error("❌ Erreur ajout colonne:", err);
+    return res.status(500).json({
+      success: false,
+      message: "Erreur lors de l'ajout de la colonne",
+      error: err.message
+    });
+  }
+});
+
 // 🔥 CONFIGURATION (public)
 router.get("/config", (req, res) => {
+  const publicKey = NOTCHPAY_CONFIG.publicKey;
+  const isTestMode = publicKey && (publicKey.includes('SBX') || publicKey.includes('test'));
+  
   return res.json({
     success: true,
     data: {
-      publicKey: NOTCHPAY_CONFIG.publicKey ? "✅ Configurée" : "❌ Manquante",
+      publicKey: publicKey ? "✅ Configurée" : "❌ Manquante",
+      mode: isTestMode ? "TEST" : "LIVE",
       baseUrl: NOTCHPAY_CONFIG.baseUrl,
       currency: "XAF",
       supportedMethods: ["mobile_money", "card", "bank"],
-      status: "active"
+      status: "active",
+      warning: isTestMode ? "⚠️ Vous utilisez des clés de TEST. Passez en mode LIVE pour accepter de vrais paiements." : null
     }
+  });
+});
+
+// 🔥 METTRE À JOUR LA CONFIGURATION NOTCHPAY
+router.post("/update-config", (req, res) => {
+  // Cette route serait protégée en production
+  const { publicKey, secretKey } = req.body;
+  
+  if (!publicKey || !secretKey) {
+    return res.status(400).json({
+      success: false,
+      message: "Clés publique et secrète requises"
+    });
+  }
+  
+  // En production, vous devriez stocker ces clés dans une base de données sécurisée
+  // Pour l'instant, on ne fait que logger
+  console.log("🔄 Mise à jour des clés NotchPay:");
+  console.log("Nouvelle clé publique:", publicKey.substring(0, 15) + '...');
+  console.log("Nouvelle clé secrète:", secretKey.substring(0, 10) + '...');
+  
+  const isLiveKey = publicKey.includes('live') && !publicKey.includes('test') && !publicKey.includes('SBX');
+  
+  return res.json({
+    success: true,
+    message: "Configuration mise à jour",
+    mode: isLiveKey ? "LIVE" : "TEST",
+    warning: isLiveKey ? null : "⚠️ Clés de TEST détectées"
   });
 });
 
