@@ -1,5 +1,4 @@
 require("dotenv").config();
-
 const { createClient } = require('@supabase/supabase-js');
 
 // Initialiser Supabase
@@ -43,17 +42,7 @@ const authenticateUser = async (req, res, next) => {
   }
 };
 
-// Configuration NotchPay
-const NOTCHPAY_CONFIG = {
-  publicKey: process.env.NOTCHPAY_PUBLIC_KEY,
-  secretKey: process.env.NOTCHPAY_SECRET_KEY,
-  baseUrl: process.env.NOTCHPAY_BASE_URL || "https://api.notchpay.co",
-  webhookSecret: process.env.NOTCHPAY_WEBHOOK_SECRET,
-  callbackUrl: process.env.NOTCHPAY_CALLBACK_URL || `${process.env.BACKEND_URL}/api/payments/webhook`
-};
-
 module.exports = {
-  NOTCHPAY_CONFIG,
   authenticateUser,
   supabase
 };
