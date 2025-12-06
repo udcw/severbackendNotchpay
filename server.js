@@ -37,6 +37,19 @@ app.get("/health", (req, res) => {
     timestamp: new Date().toISOString()
   });
 });
+// Ajoutez cette route AVANT vos autres routes
+app.get("/test-env", (req, res) => {
+  res.json({
+    notchpay_public_key: process.env.NOTCHPAY_PUBLIC_KEY ? 
+      `${process.env.NOTCHPAY_PUBLIC_KEY.substring(0, 30)}...` : 
+      "NON DÉFINIE",
+    mode: process.env.NOTCHPAY_PUBLIC_KEY?.includes('pk_live_') ? "LIVE" : 
+          process.env.NOTCHPAY_PUBLIC_KEY?.includes('SBX') ? "TEST" : 
+          "INCONNU",
+    backend_url: process.env.BACKEND_URL,
+    supabase_url: process.env.SUPABASE_URL ? "DÉFINIE" : "NON DÉFINIE"
+  });
+});
 
 // Gestion des erreurs
 app.use((err, req, res, next) => {
