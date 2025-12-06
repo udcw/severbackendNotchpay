@@ -6,31 +6,35 @@ const paymentRoutes = require("./routes/payments");
 const app = express();
 const PORT = process.env.PORT || 4000;
 
-// CORS très permissif pour le développement
+// CORS pour tous les domaines
 app.use(cors({
   origin: '*',
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization']
 }));
 
+// Middleware pour parser JSON
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// Routes
+// Routes de paiement
 app.use("/api/payments", paymentRoutes);
 
-// Route principale
+// Route racine - TRÈS IMPORTANTE !
 app.get("/", (req, res) => {
-  res.json({ 
+  res.json({
+    success: true,
     message: "✅ Serveur NotchPay fonctionnel",
+    version: "2.0.0",
     mode: "TEST",
-    status: "OK",
     endpoints: {
       initialize: "POST /api/payments/initialize",
       verify: "GET /api/payments/verify/:reference",
+      webhook: "POST /api/payments/webhook",
       config: "GET /api/payments/config",
-      test: "POST /api/payments/test-payment"
-    }
+      health: "GET /health"
+    },
+    instructions: "Pour un vrai paiement, remplacez les clés TEST par des clés LIVE"
   });
 });
 
@@ -38,31 +42,35 @@ app.get("/", (req, res) => {
 app.get("/health", (req, res) => {
   res.status(200).json({
     status: "healthy",
-    timestamp: new Date().toISOString()
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime()
   });
 });
 
-// 404
+// Route 404 - pour les routes non trouvées
 app.use((req, res) => {
   res.status(404).json({
     success: false,
-    message: "Route non trouvée"
+    message: "Route non trouvée",
+    path: req.path,
+    method: req.method
   });
 });
 
-// Gestion d'erreurs
+// Gestionnaire d'erreurs global
 app.use((err, req, res, next) => {
-  console.error('❌ Erreur:', err);
+  console.error('❌ Erreur serveur:', err);
   res.status(500).json({
     success: false,
-    message: 'Erreur interne',
-    error: err.message
+    message: 'Erreur interne du serveur',
+    error: process.env.NODE_ENV === 'production' ? undefined : err.message
   });
 });
 
-// Démarrer
+// Démarrer le serveur
 app.listen(PORT, () => {
   console.log(`🚀 Serveur démarré sur le port ${PORT}`);
-  console.log(`🔗 http://localhost:${PORT}`);
-  console.log(`🔐 Mode: TEST (Sandbox)`);
+  console.log(`🔗 URL: http://localhost:${PORT}`);
+  console.log(`🌍 Accessible depuis: https://severbackendnotchpay.onrender.com`);
+  console.log(`📡 Mode: ${process.env.NODE_ENV || 'development'}`);
 });
