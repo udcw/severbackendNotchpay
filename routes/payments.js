@@ -174,6 +174,7 @@ router.post("/initialize", authenticateUser, async (req, res) => {
 });
 
 // 🔥 VÉRIFIER UN PAIEMENT
+// 🔥 VÉRIFIER UN PAIEMENT - VERSION CORRIGÉE
 router.get("/verify/:reference", authenticateUser, async (req, res) => {
   try {
     const { reference } = req.params;
@@ -186,77 +187,139 @@ router.get("/verify/:reference", authenticateUser, async (req, res) => {
       });
     }
 
-    // Vérifier avec NotchPay
-    const response = await axios.get(
-      `${NOTCHPAY_CONFIG.baseUrl}/payments/${reference}`,
-      {
-        headers: {
-          "Authorization": NOTCHPAY_CONFIG.publicKey,
-          "Accept": "application/json"
-        }
-      }
-    );
+    console.log("🔍 Vérification du paiement:", reference);
 
-    const transaction = response.data.transaction;
-    const isComplete = transaction?.status === 'complete';
-    const isPending = transaction?.status === 'pending';
-    const isFailed = ['failed', 'cancelled'].includes(transaction?.status);
-
-    // Mettre à jour la transaction en base
-    await supabase
+    // 1. D'abord, vérifier la transaction dans notre base de données
+    const { data: dbTransaction, error: dbError } = await supabase
       .from('transactions')
-      .update({
-        status: transaction?.status,
-        metadata: {
-          ...response.data,
-          verified_at: new Date().toISOString()
-        },
-        completed_at: isComplete ? new Date().toISOString() : null
-      })
+      .select('*')
       .eq('reference', reference)
-      .eq('user_id', userId);
+      .eq('user_id', userId)
+      .single();
 
-    // Si paiement réussi, mettre à jour le profil
-    if (isComplete) {
-      await supabase
-        .from('profiles')
-        .update({
-          is_premium: true,
-          premium_activated_at: new Date().toISOString(),
-          last_payment_date: new Date().toISOString(),
-          payment_reference: reference
-        })
-        .eq('id', userId);
-
-      // Enregistrer l'abonnement
-      await supabase
-        .from('subscriptions')
-        .insert({
-          user_id: userId,
-          plan: 'premium',
-          transaction_reference: reference,
-          status: 'active',
-          starts_at: new Date().toISOString(),
-          expires_at: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString()
-        });
+    if (dbError || !dbTransaction) {
+      console.log("❌ Transaction non trouvée en base:", reference);
+      return res.json({
+        success: false,
+        message: "Transaction non trouvée",
+        pending: true,
+        paid: false,
+        status: 'not_found'
+      });
     }
 
-    return res.json({
-      success: true,
-      paid: isComplete,
-      pending: isPending,
-      failed: isFailed,
-      status: transaction?.status,
-      transaction: transaction,
-      user_upgraded: isComplete
-    });
+    console.log("✅ Transaction trouvée en base:", dbTransaction.status);
+
+    // 2. Si la transaction est déjà marquée comme complète en base, retourner directement
+    if (dbTransaction.status === 'complete' || dbTransaction.status === 'success') {
+      return res.json({
+        success: true,
+        paid: true,
+        pending: false,
+        status: dbTransaction.status,
+        message: "Paiement déjà confirmé",
+        user_upgraded: true
+      });
+    }
+
+    // 3. Essayer de vérifier avec NotchPay (seulement si en attente)
+    try {
+      const response = await axios.get(
+        `${NOTCHPAY_CONFIG.baseUrl}/payments/${reference}`,
+        {
+          headers: {
+            "Authorization": NOTCHPAY_CONFIG.publicKey,
+            "Accept": "application/json"
+          },
+          timeout: 10000
+        }
+      );
+
+      const transaction = response.data.transaction;
+      const isComplete = transaction?.status === 'complete';
+      const isPending = transaction?.status === 'pending';
+      const isFailed = ['failed', 'cancelled'].includes(transaction?.status);
+
+      console.log("✅ Statut NotchPay:", transaction?.status);
+
+      // Mettre à jour la transaction en base
+      await supabase
+        .from('transactions')
+        .update({
+          status: transaction?.status,
+          metadata: {
+            ...dbTransaction.metadata,
+            notchpay_verification: response.data,
+            verified_at: new Date().toISOString()
+          },
+          completed_at: isComplete ? new Date().toISOString() : null
+        })
+        .eq('reference', reference)
+        .eq('user_id', userId);
+
+      // Si paiement réussi, mettre à jour le profil
+      if (isComplete) {
+        await supabase
+          .from('profiles')
+          .update({
+            is_premium: true,
+            premium_activated_at: new Date().toISOString(),
+            last_payment_date: new Date().toISOString(),
+            payment_reference: reference
+          })
+          .eq('id', userId);
+
+        // Enregistrer l'abonnement
+        await supabase
+          .from('subscriptions')
+          .upsert({
+            user_id: userId,
+            plan: 'premium',
+            transaction_reference: reference,
+            status: 'active',
+            starts_at: new Date().toISOString(),
+            expires_at: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString(),
+            updated_at: new Date().toISOString()
+          }, {
+            onConflict: 'user_id, transaction_reference'
+          });
+      }
+
+      return res.json({
+        success: true,
+        paid: isComplete,
+        pending: isPending,
+        failed: isFailed,
+        status: transaction?.status,
+        message: isComplete ? "Paiement confirmé" : "Paiement en attente",
+        user_upgraded: isComplete
+      });
+
+    } catch (notchpayError) {
+      // Si NotchPay retourne "Payment Not Found", c'est normal au début
+      console.log("⚠️ NotchPay n'a pas encore le paiement, réessayez plus tard");
+      
+      return res.json({
+        success: true,
+        paid: false,
+        pending: true,
+        status: 'pending',
+        message: "Paiement en cours de traitement",
+        user_upgraded: false
+      });
+    }
 
   } catch (err) {
     console.error("❌ Erreur vérification:", err.response?.data || err.message);
     
-    return res.status(err.response?.status || 500).json({
-      success: false,
-      message: err.response?.data?.message || "Erreur lors de la vérification du paiement"
+    // Ne pas retourner d'erreur 500, juste indiquer que c'est en attente
+    return res.json({
+      success: true,
+      paid: false,
+      pending: true,
+      status: 'pending',
+      message: "Vérification en cours...",
+      user_upgraded: false
     });
   }
 });
