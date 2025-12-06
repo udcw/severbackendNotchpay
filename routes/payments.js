@@ -1,59 +1,82 @@
 const express = require("express");
 const axios = require("axios");
-const { NOTCHPAY_CONFIG, authenticateUser, supabase } = require("../middleware/auth");
+const crypto = require("crypto");
+const { authenticateUser, supabase } = require("../middleware/auth");
 
 const router = express.Router();
 
-// INITIER UN PAIEMENT
+// 🔥 CONFIGURATION NOTCHPAY LIVE
+const NOTCHPAY_CONFIG = {
+  publicKey: process.env.NOTCHPAY_PUBLIC_KEY,
+  secretKey: process.env.NOTCHPAY_SECRET_KEY,
+  baseUrl: process.env.NOTCHPAY_BASE_URL || "https://api.notchpay.co",
+  webhookSecret: process.env.NOTCHPAY_WEBHOOK_SECRET,
+  mode: "LIVE"
+};
+
+// 🔥 INITIER UN PAIEMENT (CORRIGÉ)
 router.post("/initialize", authenticateUser, async (req, res) => {
+  console.log("=== 🚀 INITIALISATION PAIEMENT LIVE ===");
+  
   try {
-    const { amount, phone, description = "Abonnement Premium Kamerun News", mode = 'live' } = req.body;
+    const { amount = 1000, description = "Abonnement Premium Kamerun News" } = req.body;
     const userId = req.user.id;
 
-    if (!amount || amount < 100) {
+    if (amount < 100) {
       return res.status(400).json({
         success: false,
         message: "Le montant doit être d'au moins 100 FCFA"
       });
     }
 
-    console.log("🆔 User ID:", userId);
-    console.log("📧 User email:", req.user.email);
-    console.log("💰 Montant:", amount);
+    console.log(`👤 Utilisateur: ${req.user.email}`);
+    console.log(`💰 Montant: ${amount} FCFA`);
 
-    const publicKey = NOTCHPAY_CONFIG.publicKey;
-    console.log("🔑 Clé publique:", publicKey ? publicKey.substring(0, 10) + '...' : 'NON DÉFINIE');
-    
-    if (publicKey && (publicKey.includes('SBX') || publicKey.includes('test'))) {
-      console.warn("⚠️ ATTENTION: Clé publique de TEST détectée!");
+    // Vérifier les clés LIVE
+    if (!NOTCHPAY_CONFIG.publicKey || !NOTCHPAY_CONFIG.publicKey.includes('pk_live_')) {
+      console.error("❌ Clés LIVE non configurées !");
+      return res.status(500).json({
+        success: false,
+        message: "Configuration NotchPay incorrecte. Contactez l'administrateur.",
+        mode: "ERROR"
+      });
     }
 
-    const reference = `KAMERUN-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    // Générer une référence UNIQUE
+    const merchantReference = `KAMERUN-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
     const amountInCents = Math.round(amount * 100);
 
+    // Données client
+    const customerName = req.user.user_metadata?.full_name || 
+                        req.user.user_metadata?.name || 
+                        req.user.email.split('@')[0];
+
+    // Payload NotchPay LIVE
     const payload = {
       amount: amountInCents,
       currency: "XAF",
       description: description,
-      reference: reference,
+      reference: merchantReference, // VOTRE référence marchand
       email: req.user.email,
       customer: {
-        name: req.user.user_metadata?.full_name || req.user.email.split('@')[0],
+        name: customerName,
         email: req.user.email,
-        phone: phone || ''
+        phone: ""
       },
-      callback_url: `${process.env.BACKEND_URL}/api/payments/webhook`,
+      callback_url: `${process.env.BACKEND_URL || 'https://severbackendnotchpay.onrender.com'}/api/payments/webhook`,
       metadata: {
         userId: userId,
         userEmail: req.user.email,
-        plan: "premium",
-        type: "subscription",
-        app: "Kamerun News"
+        product: "Abonnement Premium",
+        app: "Kamerun News",
+        mode: "LIVE"
       }
     };
 
-    console.log("📤 Payload NotchPay:", payload);
+    console.log("📤 Envoi à NotchPay LIVE...");
+    console.log("📝 Référence marchand:", merchantReference);
 
+    // Appel à NotchPay
     const response = await axios.post(
       `${NOTCHPAY_CONFIG.baseUrl}/payments/initialize`,
       payload,
@@ -63,29 +86,27 @@ router.post("/initialize", authenticateUser, async (req, res) => {
           "Content-Type": "application/json",
           "Accept": "application/json"
         },
-        timeout: 15000
+        timeout: 30000
       }
     );
 
-    console.log("✅ Réponse NotchPay:", response.data);
+    const data = response.data;
+    console.log("✅ Réponse NotchPay:", data);
 
-    let paymentUrl = null;
-    
-    if (response.data.transaction?.authorization_url) {
-      paymentUrl = response.data.transaction.authorization_url;
-    } else if (response.data.authorization_url) {
-      paymentUrl = response.data.authorization_url;
-    } else if (response.data.checkout_url) {
-      paymentUrl = response.data.checkout_url;
-    }
+    // Extraire l'URL de paiement
+    let paymentUrl = data.transaction?.authorization_url || 
+                    data.authorization_url || 
+                    data.checkout_url ||
+                    data.links?.authorization_url ||
+                    data.links?.checkout;
 
     if (!paymentUrl) {
-      console.error("❌ Aucune URL de paiement trouvée");
-      return res.status(500).json({
-        success: false,
-        message: "Erreur: aucune URL de paiement reçue de NotchPay",
-        notchpay_response: response.data
-      });
+      throw new Error("URL de paiement non reçue");
+    }
+
+    // Vérifier que c'est une URL LIVE
+    if (paymentUrl.includes('/test.')) {
+      console.warn("⚠️ Attention: URL de test avec des clés LIVE !");
     }
 
     // Enregistrer la transaction
@@ -93,95 +114,95 @@ router.post("/initialize", authenticateUser, async (req, res) => {
       .from('transactions')
       .insert({
         user_id: userId,
-        reference: reference,
+        reference: merchantReference, // Votre référence
+        notchpay_reference: data.transaction?.reference, // Référence NotchPay (peut être null)
         amount: amount,
         currency: 'XAF',
         status: 'pending',
         payment_method: 'notchpay',
         metadata: {
-          notchpay_response: response.data,
+          notchpay_response: data,
           payment_url: paymentUrl,
-          mode: mode
+          mode: 'LIVE',
+          customer_email: req.user.email
         }
       })
       .select()
       .single();
 
     if (dbError) {
-      console.error('❌ Erreur DB transaction:', dbError);
+      console.error("❌ Erreur DB:", dbError.message);
     }
 
     return res.json({
       success: true,
-      message: "Paiement initialisé avec succès",
+      message: "Paiement LIVE initialisé",
       data: {
         authorization_url: paymentUrl,
-        reference: reference,
+        checkout_url: paymentUrl,
+        reference: merchantReference,
         transaction_id: transaction?.id,
-        checkout_url: paymentUrl
+        mode: "LIVE"
       }
     });
 
-  } catch (err) {
-    console.error("❌ Erreur NotchPay:", err.message);
+  } catch (error) {
+    console.error("❌ Erreur:", error.message);
+    console.error("📡 Détails:", error.response?.data);
     
-    return res.status(err.response?.status || 500).json({
+    return res.status(500).json({
       success: false,
-      message: err.response?.data?.message || "Erreur lors de l'initialisation du paiement",
-      error: err.message
+      message: error.response?.data?.message || "Erreur initialisation paiement",
+      error: error.message
     });
   }
 });
 
-// VÉRIFIER UN PAIEMENT
+// 🔥 VÉRIFIER UN PAIEMENT (CORRIGÉ)
 router.get("/verify/:reference", authenticateUser, async (req, res) => {
   try {
-    const { reference } = req.params;
+    const { reference } = req.params; // VOTRE référence (KAMERUN-...)
     const userId = req.user.id;
 
-    if (!reference) {
-      return res.status(400).json({
-        success: false,
-        message: "Référence de paiement requise"
-      });
-    }
+    console.log(`🔍 Vérification paiement: ${reference}`);
 
-    console.log("🔍 Vérification du paiement:", reference);
-
-    // 1. Vérifier dans notre base
-    const { data: dbTransaction, error: dbError } = await supabase
+    // 1. Chercher la transaction par VOTRE référence
+    const { data: transaction, error } = await supabase
       .from('transactions')
       .select('*')
-      .eq('reference', reference)
+      .eq('reference', reference) // Cherche par VOTRE référence
       .eq('user_id', userId)
       .single();
 
-    if (dbError || !dbTransaction) {
-      return res.json({
+    if (error || !transaction) {
+      console.log("❌ Transaction non trouvée par référence marchand");
+      return res.status(404).json({
         success: false,
-        message: "Transaction non trouvée",
-        pending: true,
-        paid: false,
-        status: 'not_found'
+        message: "Transaction non trouvée"
       });
     }
 
-    // 2. Si déjà complète
-    if (dbTransaction.status === 'complete' || dbTransaction.status === 'success') {
+    console.log("✅ Transaction trouvée:", transaction.status);
+
+    // 2. Si déjà complété
+    if (transaction.status === 'complete' || transaction.status === 'success') {
       return res.json({
         success: true,
         paid: true,
         pending: false,
-        status: dbTransaction.status,
-        message: "Paiement déjà confirmé",
-        user_upgraded: true
+        status: 'complete',
+        message: "Paiement déjà confirmé"
       });
     }
 
-    // 3. Vérifier avec NotchPay
+    // 3. Essayer de vérifier avec NotchPay
     try {
+      // Essayer avec la référence NotchPay si disponible
+      const verifyReference = transaction.notchpay_reference || reference;
+      console.log(`🔍 Vérification chez NotchPay avec: ${verifyReference}`);
+      
       const response = await axios.get(
-        `${NOTCHPAY_CONFIG.baseUrl}/payments/${reference}`,
+        `${NOTCHPAY_CONFIG.baseUrl}/payments/${verifyReference}`,
         {
           headers: {
             "Authorization": NOTCHPAY_CONFIG.publicKey,
@@ -191,27 +212,28 @@ router.get("/verify/:reference", authenticateUser, async (req, res) => {
         }
       );
 
-      const transaction = response.data.transaction;
-      const isComplete = transaction?.status === 'complete' || transaction?.status === 'success';
-      const isPending = transaction?.status === 'pending';
-      const isFailed = ['failed', 'cancelled', 'canceled'].includes(transaction?.status);
-
-      console.log("✅ Statut NotchPay:", transaction?.status);
+      console.log("✅ Réponse NotchPay:", response.data);
+      
+      const transactionData = response.data.transaction || response.data;
+      const status = transactionData.status;
+      const isComplete = status === 'complete' || status === 'success';
+      const isPending = status === 'pending';
 
       // Mettre à jour la transaction
       await supabase
         .from('transactions')
         .update({
-          status: transaction?.status,
+          status: status,
+          notchpay_reference: transactionData.reference || transaction.notchpay_reference,
           metadata: {
-            ...dbTransaction.metadata,
-            notchpay_verification: response.data,
+            ...transaction.metadata,
+            verification_response: response.data,
             verified_at: new Date().toISOString()
           },
+          updated_at: new Date().toISOString(),
           completed_at: isComplete ? new Date().toISOString() : null
         })
-        .eq('reference', reference)
-        .eq('user_id', userId);
+        .eq('id', transaction.id);
 
       // Si paiement réussi
       if (isComplete) {
@@ -220,22 +242,21 @@ router.get("/verify/:reference", authenticateUser, async (req, res) => {
           .update({
             is_premium: true,
             premium_activated_at: new Date().toISOString(),
-            last_payment_date: new Date().toISOString(),
             payment_reference: reference,
+            last_payment_date: new Date().toISOString(),
             updated_at: new Date().toISOString()
           })
           .eq('id', userId);
 
         await supabase
           .from('subscriptions')
-          .upsert({
+          .insert({
             user_id: userId,
             plan: 'premium',
             transaction_reference: reference,
             status: 'active',
             starts_at: new Date().toISOString(),
-            expires_at: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString(),
-            updated_at: new Date().toISOString()
+            expires_at: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString()
           });
       }
 
@@ -243,110 +264,129 @@ router.get("/verify/:reference", authenticateUser, async (req, res) => {
         success: true,
         paid: isComplete,
         pending: isPending,
-        status: transaction?.status,
-        message: isComplete ? "Paiement confirmé" : "Paiement en attente",
-        user_upgraded: isComplete
+        status: status,
+        message: isComplete ? "Paiement confirmé" : "Paiement en cours"
       });
 
     } catch (notchpayError) {
       console.log("⚠️ NotchPay n'a pas encore le paiement");
       
+      // Retourner pending pour continuer à vérifier
       return res.json({
         success: true,
         paid: false,
         pending: true,
         status: 'pending',
-        message: "Paiement en cours de traitement",
-        user_upgraded: false
+        message: "Paiement en cours de traitement chez NotchPay"
       });
     }
 
-  } catch (err) {
-    console.error("❌ Erreur vérification:", err.message);
-    
-    return res.json({
-      success: true,
-      paid: false,
-      pending: true,
-      status: 'pending',
-      message: "Vérification en cours...",
-      user_upgraded: false
+  } catch (error) {
+    console.error("❌ Erreur vérification:", error.message);
+    return res.status(500).json({
+      success: false,
+      message: "Erreur lors de la vérification",
+      error: error.message
     });
   }
 });
 
-// WEBHOOK NOTCHPAY
+// 🔥 WEBHOOK (CORRIGÉ)
 router.post("/webhook", async (req, res) => {
-  console.log("=== 🔥 WEBHOOK REÇU ===");
+  console.log("=== 📩 WEBHOOK NOTCHPAY LIVE ===");
   
   try {
+    // Parser le body
     let payload;
     if (typeof req.body === 'string') {
-      payload = JSON.parse(req.body);
+      try {
+        payload = JSON.parse(req.body);
+      } catch (e) {
+        console.error("❌ Erreur parsing JSON:", e);
+        return res.status(400).json({ success: false, message: "JSON invalide" });
+      }
     } else {
       payload = req.body;
     }
     
-    console.log("✅ Payload reçu:", payload);
-    
+    console.log("📦 Payload reçu:", JSON.stringify(payload, null, 2));
+
     if (!payload || !payload.event || !payload.data) {
       console.error("❌ Structure payload invalide");
-      return res.status(400).json({
-        success: false,
-        message: "Structure du payload invalide"
+      return res.status(400).json({ 
+        success: false, 
+        message: "Structure du payload invalide" 
       });
     }
-    
+
     const { event, data } = payload;
-    const transaction = data?.transaction;
+    const transaction = data.transaction;
     
-    if (!transaction || !transaction.reference) {
-      console.error("❌ Référence transaction manquante");
-      return res.status(400).json({
-        success: false,
-        message: "Référence de transaction manquante"
+    if (!transaction) {
+      console.error("❌ Transaction manquante");
+      return res.status(400).json({ 
+        success: false, 
+        message: "Transaction manquante" 
       });
     }
+
+    // IMPORTANT: NotchPay envoie deux références !
+    const merchantReference = transaction.reference_merchant || transaction.reference;
+    const notchpayReference = transaction.reference;
     
-    console.log(`🔄 Traitement webhook: ${event}`);
-    console.log(`Référence: ${transaction.reference}`);
-    console.log(`Status: ${transaction.status}`);
-    
-    // Chercher la transaction
+    console.log(`🔄 Événement: ${event}`);
+    console.log(`📝 Référence marchand: ${merchantReference}`);
+    console.log(`🔑 Référence NotchPay: ${notchpayReference}`);
+    console.log(`💰 Statut: ${transaction.status}`);
+    console.log(`💵 Montant: ${transaction.amount} ${transaction.currency}`);
+
+    if (!merchantReference) {
+      console.error("❌ Référence marchand manquante");
+      return res.status(400).json({ 
+        success: false, 
+        message: "Référence marchand manquante" 
+      });
+    }
+
+    // Chercher la transaction par référence marchand (VOTRE référence)
     const { data: existingTransaction, error: findError } = await supabase
       .from('transactions')
       .select('*')
-      .eq('reference', transaction.reference)
+      .eq('reference', merchantReference)
       .single();
-    
+
     if (findError) {
-      console.log(`📝 Transaction ${transaction.reference} non trouvée, création...`);
+      console.log(`📝 Transaction non trouvée, création avec référence: ${merchantReference}`);
       
       const userId = transaction.metadata?.userId || 'unknown';
       
       await supabase
         .from('transactions')
         .insert({
-          reference: transaction.reference,
+          reference: merchantReference,
+          notchpay_reference: notchpayReference,
           user_id: userId,
-          amount: transaction.amount ? transaction.amount / 100 : 0,
+          amount: transaction.amount / 100,
           currency: transaction.currency || 'XAF',
-          status: transaction.status || 'pending',
+          status: transaction.status,
           payment_method: 'notchpay',
           metadata: {
             webhook_payload: payload,
             notchpay_transaction: transaction,
+            mode: "LIVE",
             processed_at: new Date().toISOString()
           },
           created_at: new Date().toISOString()
         });
     } else {
-      console.log(`✅ Transaction existante trouvée`);
+      console.log(`✅ Transaction trouvée, ID: ${existingTransaction.id}`);
       
+      // Mettre à jour la transaction
       await supabase
         .from('transactions')
         .update({
           status: transaction.status,
+          notchpay_reference: notchpayReference || existingTransaction.notchpay_reference,
           metadata: {
             ...existingTransaction.metadata,
             webhook_payload: payload,
@@ -354,15 +394,16 @@ router.post("/webhook", async (req, res) => {
             webhook_processed_at: new Date().toISOString()
           },
           updated_at: new Date().toISOString(),
-          completed_at: transaction.status === 'complete' ? new Date().toISOString() : null
+          completed_at: (transaction.status === 'complete' || transaction.status === 'success') ? 
+            new Date().toISOString() : null
         })
-        .eq('reference', transaction.reference);
+        .eq('id', existingTransaction.id);
     }
-    
+
     // Si paiement réussi
     const successStatuses = ['complete', 'success', 'completed'];
     if (successStatuses.includes(transaction.status)) {
-      console.log(`💰 Paiement REUSSI pour ${transaction.reference}`);
+      console.log(`💰 Paiement REUSSI pour ${merchantReference}`);
       
       let userId = transaction.metadata?.userId;
       
@@ -371,25 +412,25 @@ router.post("/webhook", async (req, res) => {
       }
       
       if (userId && !userId.startsWith('unknown')) {
-        console.log(`👤 Mise à jour utilisateur ${userId} vers PREMIUM`);
+        console.log(`👤 Mise à jour utilisateur ${userId} en PREMIUM`);
         
         await supabase
           .from('profiles')
           .update({
             is_premium: true,
             premium_activated_at: new Date().toISOString(),
+            payment_reference: merchantReference,
             last_payment_date: new Date().toISOString(),
-            payment_reference: transaction.reference,
             updated_at: new Date().toISOString()
           })
           .eq('id', userId);
-        
+
         await supabase
           .from('subscriptions')
           .upsert({
             user_id: userId,
             plan: 'premium',
-            transaction_reference: transaction.reference,
+            transaction_reference: merchantReference,
             status: 'active',
             starts_at: new Date().toISOString(),
             expires_at: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString(),
@@ -397,91 +438,55 @@ router.post("/webhook", async (req, res) => {
           });
       }
     }
-    
-    console.log(`✅ Webhook traité avec succès!`);
-    
-    return res.status(200).json({
-      success: true,
-      message: "Webhook traité avec succès",
-      reference: transaction.reference,
+
+    console.log("✅ Webhook traité avec succès");
+    return res.json({ 
+      success: true, 
+      message: "Webhook traité",
+      reference: merchantReference,
       status: transaction.status
     });
-    
-  } catch (err) {
-    console.error("❌ ERREUR WEBHOOK:", err.message);
-    
-    return res.status(500).json({
-      success: false,
-      message: "Erreur serveur interne",
-      error: err.message
+
+  } catch (error) {
+    console.error("❌ Erreur webhook:", error.message);
+    console.error(error.stack);
+    return res.status(500).json({ 
+      success: false, 
+      message: "Erreur interne" 
     });
   }
 });
 
-// ROUTE PING
-router.get("/ping", (req, res) => {
+// 🔥 CONFIGURATION
+router.get("/config", (req, res) => {
+  const publicKey = NOTCHPAY_CONFIG.publicKey;
+  const isLive = publicKey && publicKey.includes('pk_live_');
+  const isTest = publicKey && (publicKey.includes('SBX') || publicKey.includes('test'));
+  
   return res.json({
     success: true,
-    message: "Payments API is working!",
-    timestamp: new Date().toISOString()
+    config: {
+      mode: isLive ? "LIVE" : isTest ? "TEST" : "INCONNU",
+      public_key: publicKey ? `${publicKey.substring(0, 25)}...` : "NON DÉFINIE",
+      base_url: NOTCHPAY_CONFIG.baseUrl,
+      status: publicKey ? "CONFIGURÉ" : "NON CONFIGURÉ"
+    }
   });
 });
 
-// CRÉER/VÉRIFIER UN PROFIL
-router.post("/ensure-profile", authenticateUser, async (req, res) => {
-  try {
-    const userId = req.user.id;
-    
-    const { data: existingProfile, error: profileError } = await supabase
-      .from('profiles')
-      .select('*')
-      .eq('id', userId)
-      .single();
-    
-    if (profileError || !existingProfile) {
-      const newProfileData = {
-        id: userId,
-        email: req.user.email,
-        first_name: req.user.user_metadata?.first_name || 'Utilisateur',
-        last_name: req.user.user_metadata?.last_name || 'Kamerun',
-        is_premium: false,
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString()
-      };
-      
-      const { data: newProfile, error: createError } = await supabase
-        .from('profiles')
-        .upsert(newProfileData)
-        .select()
-        .single();
-      
-      if (createError) {
-        throw createError;
-      }
-      
-      return res.json({
-        success: true,
-        message: "Profil créé avec succès",
-        profile: newProfile,
-        created: true
-      });
+// 🔥 ROUTE DE TEST
+router.get("/test", (req, res) => {
+  return res.json({
+    success: true,
+    message: "API Payments fonctionnelle",
+    timestamp: new Date().toISOString(),
+    endpoints: {
+      initialize: "POST /api/payments/initialize",
+      verify: "GET /api/payments/verify/:reference",
+      webhook: "POST /api/payments/webhook",
+      config: "GET /api/payments/config"
     }
-    
-    return res.json({
-      success: true,
-      message: "Profil existe déjà",
-      profile: existingProfile,
-      created: false
-    });
-    
-  } catch (err) {
-    console.error("❌ Erreur création profil:", err);
-    return res.status(500).json({
-      success: false,
-      message: "Erreur lors de la création du profil",
-      error: err.message
-    });
-  }
+  });
 });
 
 module.exports = router;
