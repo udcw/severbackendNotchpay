@@ -1,14 +1,11 @@
 require("dotenv").config();
 
-
-
-// Configuration de l'authentification Supabase pour vérifier les tokens
 const { createClient } = require('@supabase/supabase-js');
 
 // Initialiser Supabase
 const supabase = createClient(
   process.env.SUPABASE_URL,
-  process.env.SUPABASE_ANON_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY
+  process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY
 );
 
 // Middleware d'authentification
@@ -19,13 +16,12 @@ const authenticateUser = async (req, res, next) => {
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
       return res.status(401).json({
         success: false,
-        message: "Token d'authentification requis. Veuillez vous connecter."
+        message: "Token d'authentification requis"
       });
     }
     
     const token = authHeader.split(' ')[1];
     
-    // Vérifier le token avec Supabase
     const { data: { user }, error } = await supabase.auth.getUser(token);
     
     if (error || !user) {
@@ -35,7 +31,6 @@ const authenticateUser = async (req, res, next) => {
       });
     }
     
-    // Ajouter l'utilisateur à la requête
     req.user = user;
     next();
     
@@ -54,7 +49,7 @@ const NOTCHPAY_CONFIG = {
   secretKey: process.env.NOTCHPAY_SECRET_KEY,
   baseUrl: process.env.NOTCHPAY_BASE_URL || "https://api.notchpay.co",
   webhookSecret: process.env.NOTCHPAY_WEBHOOK_SECRET,
-  callbackUrl: process.env.NOTCHPAY_CALLBACK_URL || "https://severbackendnotchpay.onrender.com/api/payments/webhook"
+  callbackUrl: process.env.NOTCHPAY_CALLBACK_URL || `${process.env.BACKEND_URL}/api/payments/webhook`
 };
 
 module.exports = {
