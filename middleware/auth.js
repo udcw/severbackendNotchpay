@@ -1,59 +1,70 @@
 require("dotenv").config();
-
 const { createClient } = require('@supabase/supabase-js');
 
 // Initialiser Supabase
 const supabase = createClient(
   process.env.SUPABASE_URL,
-  process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY
+  process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
-// Middleware d'authentification
+// Middleware d'authentification amélioré
 const authenticateUser = async (req, res, next) => {
   try {
     const authHeader = req.headers.authorization;
     
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      console.log('❌ Pas de token Bearer dans les headers');
       return res.status(401).json({
         success: false,
-        message: "Token d'authentification requis"
+        message: "Token d'authentification requis. Format: Bearer <token>"
       });
     }
     
     const token = authHeader.split(' ')[1];
     
-    const { data: { user }, error } = await supabase.auth.getUser(token);
-    
-    if (error || !user) {
+    if (!token || token.length < 10) {
       return res.status(401).json({
         success: false,
-        message: "Token invalide ou expiré"
+        message: "Token invalide"
       });
     }
     
+    console.log('🔐 Vérification du token JWT...');
+    
+    const { data: { user }, error } = await supabase.auth.getUser(token);
+    
+    if (error) {
+      console.error('❌ Erreur vérification token:', error.message);
+      return res.status(401).json({
+        success: false,
+        message: "Token invalide ou expiré",
+        details: error.message
+      });
+    }
+    
+    if (!user) {
+      console.error('❌ Aucun utilisateur trouvé pour ce token');
+      return res.status(401).json({
+        success: false,
+        message: "Utilisateur non trouvé"
+      });
+    }
+    
+    console.log(`✅ Utilisateur authentifié: ${user.email}`);
     req.user = user;
     next();
     
   } catch (error) {
-    console.error('Erreur authentification:', error);
+    console.error('❌ Erreur authentification:', error);
     res.status(500).json({
       success: false,
-      message: "Erreur d'authentification"
+      message: "Erreur d'authentification",
+      error: error.message
     });
   }
 };
 
-// Configuration NotchPay
-const NOTCHPAY_CONFIG = {
-  publicKey: process.env.NOTCHPAY_PUBLIC_KEY,
-  secretKey: process.env.NOTCHPAY_SECRET_KEY,
-  baseUrl: process.env.NOTCHPAY_BASE_URL || "https://api.notchpay.co",
-  webhookSecret: process.env.NOTCHPAY_WEBHOOK_SECRET,
-  callbackUrl: process.env.NOTCHPAY_CALLBACK_URL || `${process.env.BACKEND_URL}/api/payments/webhook`
-};
-
 module.exports = {
-  NOTCHPAY_CONFIG,
   authenticateUser,
   supabase
 };
