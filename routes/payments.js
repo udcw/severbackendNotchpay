@@ -30,7 +30,7 @@ const validateKeys = () => {
   return { isLiveMode, isTestMode };
 };
 
-// 🔥 INITIER UN PAIEMENT
+// 🔥 INITIER UN PAIEMENT - CORRIGÉ POUR 25 FCFA
 router.post("/initialize", authenticateUser, async (req, res) => {
   console.log("=== 🚀 INITIALISATION PAIEMENT ===");
 
@@ -38,17 +38,17 @@ router.post("/initialize", authenticateUser, async (req, res) => {
     const { amount = 25, description = "Abonnement Premium Kamerun News" } = req.body;
     const userId = req.user.id;
 
-    // Validation
-    if (amount !== 50) {
-      console.error(`❌ Montant incorrect: ${amount} (devrait être 1000)`);
+    // 🔥 CORRECTION : ACCEPTER SEULEMENT 25 FCFA POUR LES TESTS
+    if (amount !== 25) {
+      console.error(`❌ Montant incorrect: ${amount} (devrait être 25 FCFA)`);
       return res.status(400).json({
         success: false,
-        message: "Le montant doit être de 1000 FCFA",
+        message: "Le montant doit être de 25 FCFA pour les tests",
       });
     }
 
     console.log(`👤 Utilisateur: ${req.user.email}`);
-    console.log(`💰 Montant: ${amount} FCFA`);
+    console.log(`💰 Montant test: ${amount} FCFA`);
     
     // Vérifier les clés
     const keyValidation = validateKeys();
@@ -64,22 +64,26 @@ router.post("/initialize", authenticateUser, async (req, res) => {
     
     console.log(`🔐 Mode: ${mode}`);
 
+    // IMPORTANT : NotchPay attend le montant en unités pour XAF
+    // Pour 25 FCFA, on envoie 25 (pas de multiplication)
+    const amountForNotchpay = amount; // 25 pour 25 FCFA
+
     // Générer une référence
     const reference = `KAMERUN-${Date.now()}-${Math.random()
       .toString(36)
       .substr(2, 9)}`;
     
-    // IMPORTANT : Ne pas multiplier par 100 !
-    const amountForNotchpay = amount;
+    console.log(`📝 Référence générée: ${reference}`);
+    console.log(`💰 Montant envoyé à NotchPay: ${amountForNotchpay} XAF`);
 
     // Données client
     const customerName = req.user.user_metadata?.full_name ||
                         req.user.user_metadata?.name ||
                         req.user.email.split("@")[0];
 
-    // Payload NotchPay
+    // 🔥 PAYLOAD POUR 25 FCFA
     const payload = {
-      amount: amountForNotchpay, // 1000 XAF
+      amount: amountForNotchpay, // 25 pour 25 FCFA
       currency: "XAF",
       description: description,
       reference: reference,
@@ -87,23 +91,24 @@ router.post("/initialize", authenticateUser, async (req, res) => {
       customer: {
         name: customerName,
         email: req.user.email,
-        phone: "",
+        phone: req.body.phone || "",
       },
       callback_url: `${process.env.BACKEND_URL || "https://severbackendnotchpay.onrender.com"}/api/payments/webhook`,
       metadata: {
         userId: userId,
         userEmail: req.user.email,
-        product: "Abonnement Premium",
+        product: "Abonnement Premium Kamerun News (Test 25 FCFA)",
         app: "Kamerun News",
         mode: mode,
         amount_xaf: amount,
+        is_test_payment: true,
       },
     };
 
     console.log("📤 Envoi à NotchPay...");
     console.log("📝 Référence:", reference);
-    console.log("💰 Montant envoyé:", amountForNotchpay);
-    console.log("🔐 Mode réel:", mode);
+    console.log("💰 Montant:", amountForNotchpay, "XAF");
+    console.log("🔐 Mode:", mode);
 
     try {
       const response = await axios.post(
@@ -148,7 +153,7 @@ router.post("/initialize", authenticateUser, async (req, res) => {
         .insert({
           user_id: userId,
           reference: reference,
-          amount: amount,
+          amount: amount, // 25 FCFA
           currency: "XAF",
           status: "pending",
           payment_method: "notchpay",
@@ -157,6 +162,7 @@ router.post("/initialize", authenticateUser, async (req, res) => {
             payment_url: paymentUrl,
             mode: mode,
             customer_email: req.user.email,
+            is_test: true,
             created_at: new Date().toISOString(),
           },
         })
@@ -169,13 +175,14 @@ router.post("/initialize", authenticateUser, async (req, res) => {
 
       return res.json({
         success: true,
-        message: "Paiement initialisé avec succès",
+        message: "Paiement de test (25 FCFA) initialisé avec succès",
         mode: mode,
         data: {
           authorization_url: paymentUrl,
           checkout_url: paymentUrl,
           reference: reference,
           transaction_id: transaction?.id,
+          amount: amount,
         },
       });
     } catch (error) {
@@ -212,7 +219,7 @@ router.post("/initialize", authenticateUser, async (req, res) => {
   }
 });
 
-// 🔥 VÉRIFIER UN PAIEMENT (CORRIGÉ POUR VOTRE TABLE PROFILES)
+// 🔥 VÉRIFIER UN PAIEMENT
 router.get("/verify/:reference", authenticateUser, async (req, res) => {
   try {
     const { reference } = req.params;
@@ -297,11 +304,10 @@ router.get("/verify/:reference", authenticateUser, async (req, res) => {
         })
         .eq("id", transaction.id);
 
-      // Si paiement réussi - CORRECTION : Utiliser les colonnes existantes
+      // Si paiement réussi
       if (isComplete) {
         console.log(`✅ Paiement réussi détecté pour l'utilisateur ${userId}`);
         
-        // CORRECTION : Ne pas utiliser premium_activated_at (n'existe pas)
         const { error: profileError } = await supabase
           .from("profiles")
           .update({
@@ -318,7 +324,7 @@ router.get("/verify/:reference", authenticateUser, async (req, res) => {
           console.log(`✅ Profil ${userId} mis à jour vers Premium`);
         }
 
-        // Créer l'abonnement (si la table existe)
+        // Créer l'abonnement
         try {
           await supabase
             .from("subscriptions")
@@ -342,7 +348,7 @@ router.get("/verify/:reference", authenticateUser, async (req, res) => {
         failed: isFailed,
         status: status,
         message: isComplete
-          ? "Paiement confirmé"
+          ? "Paiement confirmé (25 FCFA)"
           : isFailed
           ? "Paiement échoué"
           : "Paiement en cours",
@@ -371,7 +377,7 @@ router.get("/verify/:reference", authenticateUser, async (req, res) => {
   }
 });
 
-// 🔥 WEBHOOK CORRIGÉ POUR VOTRE TABLE
+// 🔥 WEBHOOK NOTCHPAY
 router.post("/webhook", async (req, res) => {
   console.log("=== 📩 WEBHOOK NOTCHPAY REÇU ===");
 
@@ -390,7 +396,7 @@ router.post("/webhook", async (req, res) => {
 
     console.log("📦 Données webhook:", JSON.stringify(payload, null, 2));
 
-    // 🔥 DÉTECTION DE L'ÉVÉNEMENT
+    // Détection de l'événement
     const event = payload.événement || payload.event;
     const data = payload.données || payload.data;
     
@@ -407,7 +413,7 @@ router.post("/webhook", async (req, res) => {
     console.log(`💰 Montant: ${data.montant || data.amount}`);
     console.log(`📝 Référence: ${data.merchant_reference || data.reference}`);
 
-    // 🔥 RÉCUPÉRER LA RÉFÉRENCE
+    // Récupérer la référence
     const reference = data.merchant_reference || data.trxref || data.référence;
     
     if (!reference) {
@@ -420,7 +426,7 @@ router.post("/webhook", async (req, res) => {
 
     console.log(`🔍 Recherche transaction: ${reference}`);
 
-    // 🔥 CHERCHER LA TRANSACTION
+    // Chercher la transaction
     const { data: transaction, error: transactionError } = await supabase
       .from("transactions")
       .select("*")
@@ -437,14 +443,14 @@ router.post("/webhook", async (req, res) => {
 
     console.log("✅ Transaction trouvée:", transaction.id);
 
-    // 🔥 DÉTERMINER LE STATUT
+    // Déterminer le statut
     const status = data.statut || data.status;
     const isComplete = status === "complete" || status === "success" || status === "terminé";
     const isFailed = status === "failed" || status === "cancelled" || status === "échoué";
 
     console.log(`📊 Statut à appliquer: ${status} (complet: ${isComplete})`);
 
-    // 🔥 METTRE À JOUR LA TRANSACTION
+    // Mettre à jour la transaction
     const { error: updateError } = await supabase
       .from("transactions")
       .update({
@@ -466,12 +472,11 @@ router.post("/webhook", async (req, res) => {
       console.log("✅ Transaction mise à jour");
     }
 
-    // 🔥 SI PAIEMENT RÉUSSI, METTRE À JOUR L'UTILISATEUR (CORRECTION)
+    // Si paiement réussi, mettre à jour l'utilisateur
     if (isComplete) {
       const userId = transaction.user_id;
       console.log(`🎯 Activation Premium pour l'utilisateur: ${userId}`);
 
-      // CORRECTION : Utiliser les colonnes existantes (pas premium_activated_at)
       const { error: profileError } = await supabase
         .from("profiles")
         .update({
@@ -488,7 +493,7 @@ router.post("/webhook", async (req, res) => {
         console.log(`✅ Utilisateur ${userId} mis à jour vers Premium`);
       }
 
-      // Créer l'abonnement (optionnel)
+      // Créer l'abonnement
       try {
         await supabase
           .from("subscriptions")
@@ -505,7 +510,7 @@ router.post("/webhook", async (req, res) => {
       }
     }
 
-    // 🔥 RÉPONDRE À NOTCHPAY
+    // Répondre à NotchPay
     return res.json({
       success: true,
       message: "Webhook traité avec succès",
@@ -542,23 +547,32 @@ router.get("/config", (req, res) => {
     success: true,
     config: {
       mode: mode,
+      test_amount: 25,
+      live_amount: 1000,
       status: isLiveMode ? "🚀 PRÊT POUR LES VRAIS PAIEMENTS" : "🧪 MODE TEST",
       message: isLiveMode 
         ? "✅ Mode LIVE - Les vrais paiements sont activés"
-        : "⚠️ Mode TEST - Remplacez par des clés LIVE pour accepter de vrais paiements"
+        : "⚠️ Mode TEST - Paiement de test à 25 FCFA uniquement"
     }
   });
 });
 
-// 🔥 FORCE UPGRADE - CORRIGÉ POUR VOTRE TABLE
-router.post("/force-upgrade/:userId", async (req, res) => {
+// 🔥 FORCE UPGRADE MANUEL
+router.post("/force-upgrade/:userId", authenticateUser, async (req, res) => {
   try {
     const { userId } = req.params;
     const { reference } = req.body;
 
+    // Vérifier que l'utilisateur peut activer son propre compte
+    if (req.user.id !== userId) {
+      return res.status(403).json({
+        success: false,
+        message: "Accès non autorisé"
+      });
+    }
+
     console.log(`🔧 Activation manuelle pour: ${userId}, référence: ${reference}`);
 
-    // CORRECTION : Utiliser les colonnes existantes
     const { error: profileError } = await supabase
       .from("profiles")
       .update({
@@ -578,7 +592,7 @@ router.post("/force-upgrade/:userId", async (req, res) => {
       });
     }
 
-    // Créer l'abonnement (optionnel)
+    // Créer l'abonnement
     try {
       await supabase
         .from("subscriptions")
@@ -610,7 +624,7 @@ router.post("/force-upgrade/:userId", async (req, res) => {
   }
 });
 
-// 🔥 ROUTE POUR VÉRIFIER L'ÉTAT D'UN UTILISATEUR
+// 🔥 VÉRIFIER LE STATUT UTILISATEUR
 router.get("/user-status/:userId", authenticateUser, async (req, res) => {
   try {
     const { userId } = req.params;
