@@ -6,7 +6,7 @@ const paymentRoutes = require("./routes/payments");
 const app = express();
 const PORT = process.env.PORT || 4000;
 
-// CORS très permissif pour le développement
+// Middleware
 app.use(cors({
   origin: '*',
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
@@ -19,70 +19,90 @@ app.use(express.urlencoded({ extended: true }));
 // Routes
 app.use("/api/payments", paymentRoutes);
 
-// Route principale
+// Routes de base
 app.get("/", (req, res) => {
-  res.json({ 
+  res.json({
+    success: true,
     message: "✅ Serveur NotchPay fonctionnel",
-    mode: "TEST",
-    status: "OK",
+    version: "3.0.0",
+    mode: process.env.NODE_ENV === 'production' ? 'LIVE' : 'TEST',
     endpoints: {
       initialize: "POST /api/payments/initialize",
       verify: "GET /api/payments/verify/:reference",
+      webhook: "POST /api/payments/webhook",
+      webhook_notchpay: "POST /api/payments/webhook/notchpay",
       config: "GET /api/payments/config",
-      test: "POST /api/payments/test-payment"
-    }
+      health: "GET /health",
+      test_webhook: "GET /test-webhook"
+    },
+    instructions: "Le système de paiement est opérationnel"
   });
 });
-// Ajoutez dans server.js
+
 app.get("/test-webhook", (req, res) => {
-  const testData = {
-    event: "payment.complete",
-    data: {
-      amount: 1000,
-      status: "complete",
-      reference: "trx.TEST123",
-      merchant_reference: "KAMERUN-TEST-123",
-      metadata: {
-        userId: "test-user-123",
-        userEmail: "test@example.com"
-      }
-    }
-  };
-  
   res.json({
-    message: "Test webhook",
-    curl_command: `curl -X POST https://severbackendnotchpay.onrender.com/api/payments/webhook -H "Content-Type: application/json" -d '${JSON.stringify(testData)}'`
+    message: "Pour tester le webhook, utilisez Postman ou curl avec :",
+    curl_command: `curl -X POST https://severbackendnotchpay.onrender.com/api/payments/webhook/notchpay \\
+      -H "Content-Type: application/json" \\
+      -d '{
+        "event": "payment.complete",
+        "data": {
+          "reference": "TRX-TEST-12345",
+          "status": "complete",
+          "amount": 2500,
+          "currency": "XAF",
+          "customer": {
+            "email": "test@example.com"
+          },
+          "metadata": {
+            "userId": "test-user-id",
+            "userEmail": "test@example.com"
+          }
+        }
+      }'`
   });
 });
-// Route de santé
+
 app.get("/health", (req, res) => {
   res.status(200).json({
     status: "healthy",
-    timestamp: new Date().toISOString()
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime(),
+    mode: process.env.NODE_ENV || 'development',
+    webhook_url: "https://severbackendnotchpay.onrender.com/api/payments/webhook/notchpay"
   });
 });
 
-// 404
+// Routes non trouvées
 app.use((req, res) => {
   res.status(404).json({
     success: false,
-    message: "Route non trouvée"
+    message: "Route non trouvée",
+    path: req.path,
+    method: req.method
   });
 });
 
-// Gestion d'erreurs
+// Gestionnaire d'erreurs
 app.use((err, req, res, next) => {
-  console.error('❌ Erreur:', err);
+  console.error('❌ Erreur serveur:', err);
   res.status(500).json({
     success: false,
-    message: 'Erreur interne',
-    error: err.message
+    message: 'Erreur interne du serveur',
+    error: process.env.NODE_ENV === 'production' ? undefined : err.message
   });
 });
 
-// Démarrer
+// Démarrer le serveur
 app.listen(PORT, () => {
   console.log(`🚀 Serveur démarré sur le port ${PORT}`);
-  console.log(`🔗 http://localhost:${PORT}`);
-  console.log(`🔐 Mode: TEST (Sandbox)`);
+  console.log(`🔗 URL: http://localhost:${PORT}`);
+  console.log(`🌍 Accessible depuis: https://severbackendnotchpay.onrender.com`);
+  console.log(`📡 Mode: ${process.env.NODE_ENV || 'development'}`);
+  console.log(`🔧 Webhook NotchPay: https://severbackendnotchpay.onrender.com/api/payments/webhook/notchpay`);
+  console.log(`⚙️ Variables d'environnement chargées:`, {
+    NODE_ENV: process.env.NODE_ENV,
+    SUPABASE_URL: process.env.SUPABASE_URL ? '✓' : '✗',
+    NOTCHPAY_PUBLIC_KEY: process.env.NOTCHPAY_PUBLIC_KEY ? '✓' : '✗'
+  });
 });
