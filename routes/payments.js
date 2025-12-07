@@ -39,7 +39,7 @@ router.post("/initialize", authenticateUser, async (req, res) => {
     const userId = req.user.id;
 
     // Validation
-    if (amount !== 25) {
+    if (amount !== 50) {
       console.error(`❌ Montant incorrect: ${amount} (devrait être 1000)`);
       return res.status(400).json({
         success: false,
