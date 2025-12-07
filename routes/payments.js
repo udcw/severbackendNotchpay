@@ -4,12 +4,12 @@ const { authenticateUser, supabase } = require("../middleware/auth");
 
 const router = express.Router();
 
-// 🔥 CONFIGURATION NOTCHPAY - PASSER EN MODE LIVE !
+// 🔥 CONFIGURATION NOTCHPAY
 const NOTCHPAY_CONFIG = {
   publicKey: process.env.NOTCHPAY_PUBLIC_KEY,
   secretKey: process.env.NOTCHPAY_SECRET_KEY,
   baseUrl: process.env.NOTCHPAY_BASE_URL || "https://api.notchpay.co",
-  mode: process.env.NOTCHPAY_MODE || "LIVE", // FORCER LE MODE LIVE
+  mode: process.env.NOTCHPAY_MODE || "LIVE",
 };
 
 // 🔥 VALIDATION DES CLÉS
@@ -30,7 +30,7 @@ const validateKeys = () => {
   return { isLiveMode, isTestMode };
 };
 
-// 🔥 INITIER UN PAIEMENT (VERSION CORRIGÉE)
+// 🔥 INITIER UN PAIEMENT
 router.post("/initialize", authenticateUser, async (req, res) => {
   console.log("=== 🚀 INITIALISATION PAIEMENT ===");
 
@@ -69,7 +69,7 @@ router.post("/initialize", authenticateUser, async (req, res) => {
       .toString(36)
       .substr(2, 9)}`;
     
-    // IMPORTANT : Ne pas multiplier par 100 ! NotchPay attend déjà des XAF
+    // IMPORTANT : Ne pas multiplier par 100 !
     const amountForNotchpay = amount;
 
     // Données client
@@ -212,7 +212,7 @@ router.post("/initialize", authenticateUser, async (req, res) => {
   }
 });
 
-// 🔥 VÉRIFIER UN PAIEMENT (VERSION CORRIGÉE)
+// 🔥 VÉRIFIER UN PAIEMENT (CORRIGÉ POUR VOTRE TABLE PROFILES)
 router.get("/verify/:reference", authenticateUser, async (req, res) => {
   try {
     const { reference } = req.params;
@@ -297,16 +297,15 @@ router.get("/verify/:reference", authenticateUser, async (req, res) => {
         })
         .eq("id", transaction.id);
 
-      // Si paiement réussi
+      // Si paiement réussi - CORRECTION : Utiliser les colonnes existantes
       if (isComplete) {
         console.log(`✅ Paiement réussi détecté pour l'utilisateur ${userId}`);
         
-        // Mettre à jour le profil
+        // CORRECTION : Ne pas utiliser premium_activated_at (n'existe pas)
         const { error: profileError } = await supabase
           .from("profiles")
           .update({
             is_premium: true,
-            premium_activated_at: new Date().toISOString(),
             payment_reference: reference,
             last_payment_date: new Date().toISOString(),
             updated_at: new Date().toISOString(),
@@ -319,20 +318,21 @@ router.get("/verify/:reference", authenticateUser, async (req, res) => {
           console.log(`✅ Profil ${userId} mis à jour vers Premium`);
         }
 
-        // Créer l'abonnement
-        await supabase
-          .from("subscriptions")
-          .insert({
-            user_id: userId,
-            plan: "premium",
-            transaction_reference: reference,
-            status: "active",
-            starts_at: new Date().toISOString(),
-            expires_at: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString(),
-          })
-          .catch((err) => {
-            console.log("⚠️ Erreur création abonnement:", err.message);
-          });
+        // Créer l'abonnement (si la table existe)
+        try {
+          await supabase
+            .from("subscriptions")
+            .insert({
+              user_id: userId,
+              plan: "premium",
+              transaction_reference: reference,
+              status: "active",
+              starts_at: new Date().toISOString(),
+              expires_at: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString(),
+            });
+        } catch (err) {
+          console.log("ℹ️ Table subscriptions non disponible:", err.message);
+        }
       }
 
       return res.json({
@@ -351,44 +351,7 @@ router.get("/verify/:reference", authenticateUser, async (req, res) => {
     } catch (notchpayError) {
       console.error("⚠️ Erreur vérification NotchPay:", notchpayError.message);
 
-      // En mode LIVE, ne pas simuler de succès
-      const keyValidation = validateKeys();
-      if (keyValidation && keyValidation.isTestMode) {
-        console.log("🧪 Mode TEST: Simulation possible");
-        
-        // Pour le mode TEST seulement, simuler parfois un succès
-        if (Math.random() > 0.5) {
-          console.log("🧪 Simulation succès TEST");
-
-          await supabase
-            .from("transactions")
-            .update({
-              status: "complete",
-              updated_at: new Date().toISOString(),
-            })
-            .eq("id", transaction.id);
-
-          await supabase
-            .from("profiles")
-            .update({
-              is_premium: true,
-              premium_activated_at: new Date().toISOString(),
-              payment_reference: reference,
-              updated_at: new Date().toISOString(),
-            })
-            .eq("id", userId);
-
-          return res.json({
-            success: true,
-            paid: true,
-            pending: false,
-            status: "complete",
-            message: "Paiement TEST simulé",
-            user_upgraded: true,
-          });
-        }
-      }
-
+      // En mode LIVE, ne pas simuler
       return res.json({
         success: true,
         paid: false,
@@ -408,7 +371,7 @@ router.get("/verify/:reference", authenticateUser, async (req, res) => {
   }
 });
 
-// 🔥 WEBHOOK CORRIGÉ POUR MODE LIVE
+// 🔥 WEBHOOK CORRIGÉ POUR VOTRE TABLE
 router.post("/webhook", async (req, res) => {
   console.log("=== 📩 WEBHOOK NOTCHPAY REÇU ===");
 
@@ -503,17 +466,16 @@ router.post("/webhook", async (req, res) => {
       console.log("✅ Transaction mise à jour");
     }
 
-    // 🔥 SI PAIEMENT RÉUSSI, METTRE À JOUR L'UTILISATEUR
+    // 🔥 SI PAIEMENT RÉUSSI, METTRE À JOUR L'UTILISATEUR (CORRECTION)
     if (isComplete) {
       const userId = transaction.user_id;
       console.log(`🎯 Activation Premium pour l'utilisateur: ${userId}`);
 
-      // Mettre à jour le profil
+      // CORRECTION : Utiliser les colonnes existantes (pas premium_activated_at)
       const { error: profileError } = await supabase
         .from("profiles")
         .update({
           is_premium: true,
-          premium_activated_at: new Date().toISOString(),
           payment_reference: reference,
           last_payment_date: new Date().toISOString(),
           updated_at: new Date().toISOString(),
@@ -526,20 +488,21 @@ router.post("/webhook", async (req, res) => {
         console.log(`✅ Utilisateur ${userId} mis à jour vers Premium`);
       }
 
-      // Créer l'abonnement
-      await supabase
-        .from("subscriptions")
-        .insert({
-          user_id: userId,
-          plan: "premium",
-          transaction_reference: reference,
-          status: "active",
-          starts_at: new Date().toISOString(),
-          expires_at: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString(),
-        })
-        .catch((err) => {
-          console.log("⚠️ Erreur création abonnement:", err.message);
-        });
+      // Créer l'abonnement (optionnel)
+      try {
+        await supabase
+          .from("subscriptions")
+          .insert({
+            user_id: userId,
+            plan: "premium",
+            transaction_reference: reference,
+            status: "active",
+            starts_at: new Date().toISOString(),
+            expires_at: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString(),
+          });
+      } catch (err) {
+        console.log("ℹ️ Table subscriptions non disponible:", err.message);
+      }
     }
 
     // 🔥 RÉPONDRE À NOTCHPAY
@@ -587,7 +550,7 @@ router.get("/config", (req, res) => {
   });
 });
 
-// 🔥 ROUTE DE DÉPANNAGE : Forcer l'activation manuelle
+// 🔥 FORCE UPGRADE - CORRIGÉ POUR VOTRE TABLE
 router.post("/force-upgrade/:userId", async (req, res) => {
   try {
     const { userId } = req.params;
@@ -595,12 +558,11 @@ router.post("/force-upgrade/:userId", async (req, res) => {
 
     console.log(`🔧 Activation manuelle pour: ${userId}, référence: ${reference}`);
 
-    // Mettre à jour le profil
+    // CORRECTION : Utiliser les colonnes existantes
     const { error: profileError } = await supabase
       .from("profiles")
       .update({
         is_premium: true,
-        premium_activated_at: new Date().toISOString(),
         payment_reference: reference,
         last_payment_date: new Date().toISOString(),
         updated_at: new Date().toISOString(),
@@ -616,20 +578,21 @@ router.post("/force-upgrade/:userId", async (req, res) => {
       });
     }
 
-    // Créer l'abonnement
-    await supabase
-      .from("subscriptions")
-      .insert({
-        user_id: userId,
-        plan: "premium",
-        transaction_reference: reference,
-        status: "active",
-        starts_at: new Date().toISOString(),
-        expires_at: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString(),
-      })
-      .catch((err) => {
-        console.log("⚠️ Erreur création abonnement:", err.message);
-      });
+    // Créer l'abonnement (optionnel)
+    try {
+      await supabase
+        .from("subscriptions")
+        .insert({
+          user_id: userId,
+          plan: "premium",
+          transaction_reference: reference,
+          status: "active",
+          starts_at: new Date().toISOString(),
+          expires_at: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString(),
+        });
+    } catch (err) {
+      console.log("ℹ️ Table subscriptions non disponible:", err.message);
+    }
 
     console.log(`✅ Activation manuelle réussie pour ${userId}`);
 
@@ -643,6 +606,49 @@ router.post("/force-upgrade/:userId", async (req, res) => {
       success: false,
       message: "Erreur lors de l'activation manuelle",
       error: error.message,
+    });
+  }
+});
+
+// 🔥 ROUTE POUR VÉRIFIER L'ÉTAT D'UN UTILISATEUR
+router.get("/user-status/:userId", authenticateUser, async (req, res) => {
+  try {
+    const { userId } = req.params;
+    
+    // Vérifier que l'utilisateur demande son propre statut
+    if (req.user.id !== userId) {
+      return res.status(403).json({
+        success: false,
+        message: "Accès non autorisé"
+      });
+    }
+    
+    const { data: profile, error } = await supabase
+      .from("profiles")
+      .select("is_premium, payment_reference, last_payment_date, updated_at")
+      .eq("id", userId)
+      .single();
+    
+    if (error) {
+      console.error("❌ Erreur récupération profil:", error);
+      return res.status(500).json({
+        success: false,
+        message: "Erreur lors de la récupération du profil"
+      });
+    }
+    
+    return res.json({
+      success: true,
+      is_premium: profile.is_premium || false,
+      payment_reference: profile.payment_reference,
+      last_payment_date: profile.last_payment_date,
+      updated_at: profile.updated_at
+    });
+  } catch (error) {
+    console.error("❌ Erreur user-status:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Erreur interne"
     });
   }
 });
