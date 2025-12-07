@@ -35,7 +35,7 @@ router.post("/initialize", authenticateUser, async (req, res) => {
   console.log("=== 🚀 INITIALISATION PAIEMENT ===");
 
   try {
-    const { amount = 1000, description = "Abonnement Premium Kamerun News" } = req.body;
+    const { amount = 25, description = "Abonnement Premium Kamerun News" } = req.body;
     const userId = req.user.id;
 
     // Validation
