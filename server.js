@@ -33,7 +33,27 @@ app.get("/", (req, res) => {
     }
   });
 });
-
+// Ajoutez dans server.js
+app.get("/test-webhook", (req, res) => {
+  const testData = {
+    event: "payment.complete",
+    data: {
+      amount: 1000,
+      status: "complete",
+      reference: "trx.TEST123",
+      merchant_reference: "KAMERUN-TEST-123",
+      metadata: {
+        userId: "test-user-123",
+        userEmail: "test@example.com"
+      }
+    }
+  };
+  
+  res.json({
+    message: "Test webhook",
+    curl_command: `curl -X POST https://severbackendnotchpay.onrender.com/api/payments/webhook -H "Content-Type: application/json" -d '${JSON.stringify(testData)}'`
+  });
+});
 // Route de santé
 app.get("/health", (req, res) => {
   res.status(200).json({
