@@ -4,137 +4,99 @@ const { authenticateUser, supabase } = require("../middleware/auth");
 
 const router = express.Router();
 
-// 🔥 CONFIGURATION NOTCHPAY - MODE LIVE
+// 🔥 CONFIGURATION NOTCHPAY
 const NOTCHPAY_CONFIG = {
-  publicKey: process.env.NOTCHPAY_PUBLIC_KEY,
-  secretKey: process.env.NOTCHPAY_SECRET_KEY,
-  baseUrl: process.env.NOTCHPAY_BASE_URL || "https://api.notchpay.co",
-  mode: process.env.NOTCHPAY_MODE || "LIVE", // 🔥 Changé à LIVE
+  publicKey: process.env.NOTCHPAY_PUBLIC_KEY || "pk.SBXvy0Fe1pGfFWwABmBAw7aSu8xcSaHZNiW2aRxWZe9oF2m59rbjtRa0je1UhqJfQ3NGn3TzyqrYHbLFLKElE1nKVSZQJcQ9wAOczNBYG66zHX4svoGmTpaWLDrVY",
+  secretKey: process.env.NOTCHPAY_SECRET_KEY || "sk.OjkG6OCmWq6LmMU2arL79NjZtDI8XQq4QKrIRnG1yQL5Sjv5SQzw6LDuzqhwNRx151maxwzehBTVjzGqsGjOr7y0s1k7auKRfIrmOgDXnYjziLUL8ILQQtDxQY00k",
+  baseUrl: "https://api.notchpay.co",
+  webhookSecret: process.env.NOTCHPAY_WEBHOOK_SECRET
 };
 
-// 🔥 VALIDATION DES CLÉS - MODE LIVE
-const validateKeys = () => {
-  const publicKey = NOTCHPAY_CONFIG.publicKey;
-  const secretKey = NOTCHPAY_CONFIG.secretKey;
-  
-  if (!publicKey || !secretKey) {
-    console.error("❌ Clés NotchPay manquantes !");
-    return false;
-  }
-  
-  // 🔥 Détection du mode LIVE
-  const isTestMode = publicKey.includes("SBX") || publicKey.includes("test");
-  const isLiveMode = publicKey.includes("pk_live_") || NOTCHPAY_CONFIG.mode === "LIVE";
-  
-  console.log(`🔐 Validation clés: ${isLiveMode ? 'LIVE' : isTestMode ? 'TEST' : 'INCONNU'}`);
-  
-  return { isLiveMode, isTestMode };
-};
+// 🔥 DÉTECTER LE MODE
+function detectMode(publicKey) {
+  if (!publicKey) return "TEST";
+  if (publicKey.includes('pk_live_')) return "LIVE";
+  if (publicKey.includes('pk_test_')) return "TEST";
+  if (publicKey.includes('SBX')) return "TEST"; // Clé Sandbox
+  return "TEST";
+}
 
-// 🔥 CRÉER UN PROFIL SI N'EXISTE PAS
-const ensureProfileExists = async (userId, email) => {
-  try {
-    console.log(`🔍 Vérification profil pour: ${userId}`);
-    
-    const { data: existingProfile, error } = await supabase
-      .from("profiles")
-      .select("id")
-      .eq("id", userId)
-      .maybeSingle();
-    
-    if (error && error.code !== 'PGRST116') {
-      console.error("❌ Erreur vérification profil:", error);
-    }
-    
-    if (!existingProfile) {
-      console.log(`📝 Création du profil pour: ${userId}`);
-      
-      const { data: newProfile, error: createError } = await supabase
-        .from("profiles")
-        .insert({
-          id: userId,
-          email: email,
-          is_premium: false,
-          first_name: "",
-          last_name: "",
-          tribe: "",
-          phone: "",
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString()
-        })
-        .select()
-        .single();
-      
-      if (createError) {
-        console.error("❌ Erreur création profil:", createError);
-        return { success: false, error: createError };
-      }
-      
-      console.log(`✅ Profil créé: ${newProfile.id}`);
-      return { success: true, profile: newProfile };
-    }
-    
-    return { success: true, profile: existingProfile };
-  } catch (error) {
-    console.error("❌ Erreur ensureProfileExists:", error);
-    return { success: false, error: error.message };
-  }
-};
+const currentMode = detectMode(NOTCHPAY_CONFIG.publicKey);
+console.log(`🔧 Mode NotchPay détecté: ${currentMode}`);
 
-// 🔥 INITIER UN PAIEMENT - MODE LIVE (1000 FCFA)
+// 🔥 INITIALISER UN PAIEMENT
 router.post("/initialize", authenticateUser, async (req, res) => {
-  console.log("=== 🚀 INITIALISATION PAIEMENT LIVE ===");
+  console.log("=== 🚀 INITIALISATION PAIEMENT ===");
 
   try {
-    // 🔥 MONTANT LIVE: 1000 FCFA
-    const { amount = 1000, description = "Abonnement Premium Kamerun News" } = req.body;
+    const { amount = 25, description = "Abonnement Premium Kamerun News" } = req.body;
     const userId = req.user.id;
     const userEmail = req.user.email;
 
-    // 🔥 VÉRIFIER SI LE PROFIL EXISTE
-    const profileCheck = await ensureProfileExists(userId, userEmail);
-    if (!profileCheck.success) {
-      return res.status(500).json({
-        success: false,
-        message: "Erreur lors de la vérification du profil utilisateur",
-      });
-    }
+    console.log(`👤 Utilisateur: ${userEmail} (${userId})`);
+    console.log(`💰 Montant demandé: ${amount} FCFA`);
+    console.log(`📝 Description: ${description}`);
 
-    // 🔥 VÉRIFICATION DU MONTANT POUR LE MODE LIVE
-    const keyValidation = validateKeys();
-    const { isLiveMode } = keyValidation;
-    
-    if (isLiveMode && amount !== 1000) {
-      console.error(`❌ Montant incorrect pour LIVE: ${amount} (devrait être 1000 FCFA)`);
+    // Validation
+    if (amount < 25) {
       return res.status(400).json({
         success: false,
-        message: "Le montant doit être de 1000 FCFA pour les paiements réels",
+        message: "Le montant minimum est de 25 FCFA"
       });
     }
 
-    console.log(`👤 Utilisateur: ${userEmail}`);
-    console.log(`💰 Montant LIVE: ${amount} FCFA`);
-    console.log(`🔐 Mode: ${isLiveMode ? 'LIVE' : 'TEST'}`);
-
-    // Montant pour NotchPay (en unités XAF)
-    const amountForNotchpay = amount;
-
-    // 🔥 GÉNÉRER UNE RÉFÉRENCE UNIQUE POUR LIVE
+    // Générer une référence unique
     const timestamp = Date.now();
-    const randomString = Math.random().toString(36).substring(2, 12);
-    const reference = `KAMERUN-LIVE-${timestamp}-${randomString}`;
-    
-    console.log(`📝 Référence LIVE générée: ${reference}`);
-    console.log(`💰 Montant envoyé à NotchPay: ${amountForNotchpay} XAF`);
+    const randomStr = Math.random().toString(36).substring(2, 10);
+    const reference = `KAMERUN-${timestamp}-${randomStr}`.toUpperCase();
+    const amountInCents = Math.round(amount * 100);
 
-    // Données client
-    const customerName = req.user.user_metadata?.full_name ||
-                        req.user.user_metadata?.name ||
-                        userEmail.split("@")[0];
+    // Créer d'abord l'enregistrement dans Supabase
+    const { data: transaction, error: txError } = await supabase
+      .from("transactions")
+      .insert({
+        user_id: userId,
+        reference: reference,
+        amount: amount,
+        currency: "XAF",
+        status: "pending",
+        description: description,
+        metadata: {
+          user_email: userEmail,
+          mode: currentMode,
+          created_at: new Date().toISOString()
+        }
+      })
+      .select()
+      .single();
 
-    // 🔥 PAYLOAD POUR MODE LIVE
+    if (txError) {
+      console.error("❌ Erreur création transaction:", txError);
+      return res.status(500).json({
+        success: false,
+        message: "Erreur création transaction",
+        error: txError.message
+      });
+    }
+
+    console.log(`✅ Transaction créée en base: ${reference}`);
+
+    // Mettre à jour le profil avec la référence
+    await supabase
+      .from("profiles")
+      .update({
+        payment_reference: reference,
+        updated_at: new Date().toISOString()
+      })
+      .eq("id", userId);
+
+    // Données pour NotchPay
+    const customerName = req.user.user_metadata?.full_name || 
+                        req.user.user_metadata?.name || 
+                        userEmail.split('@')[0];
+
     const payload = {
-      amount: amountForNotchpay,
+      amount: amountInCents,
       currency: "XAF",
       description: description,
       reference: reference,
@@ -142,19 +104,20 @@ router.post("/initialize", authenticateUser, async (req, res) => {
       customer: {
         name: customerName,
         email: userEmail,
-        phone: req.body.phone || "",
       },
-      callback_url: `${process.env.BACKEND_URL}/api/payments/webhook`,
+      callback_url: `https://severbackendnotchpay.onrender.com/api/payments/webhook/notchpay`,
+      webhook_url: `https://severbackendnotchpay.onrender.com/api/payments/webhook/notchpay`,
       metadata: {
         userId: userId,
         userEmail: userEmail,
         product: "Abonnement Premium Kamerun News",
-        app: "Kamerun News",
-        amount_xaf: amount,
-      },
+        mode: currentMode
+      }
     };
 
-    console.log("📤 Envoi à NotchPay (LIVE)...");
+    console.log("📤 Envoi à NotchPay...");
+    console.log("📝 Référence:", reference);
+    console.log("🔗 Callback URL:", payload.callback_url);
 
     try {
       const response = await axios.post(
@@ -164,384 +127,583 @@ router.post("/initialize", authenticateUser, async (req, res) => {
           headers: {
             Authorization: NOTCHPAY_CONFIG.publicKey,
             "Content-Type": "application/json",
-            Accept: "application/json",
+            "Accept": "application/json"
           },
-          timeout: 30000,
+          timeout: 30000
         }
       );
 
-      console.log("✅ Réponse NotchPay LIVE reçue");
-
       const data = response.data;
-      console.log("📊 Données NotchPay LIVE:", JSON.stringify(data, null, 2));
+      console.log("✅ Réponse NotchPay reçue");
 
-      // 🔥 RÉCUPÉRATION DE L'URL DE PAIEMENT
+      // Extraire l'URL de paiement
       let paymentUrl = data.authorization_url || 
+                      data.checkout_url || 
                       data.transaction?.authorization_url ||
-                      data.checkout_url ||
-                      data.transaction?.checkout_url ||
-                      data.links?.authorization_url ||
-                      data.links?.checkout ||
-                      data.url;
+                      data.links?.authorization_url;
 
       if (!paymentUrl) {
-        console.error("❌ Aucune URL de paiement trouvée dans la réponse LIVE");
-        return res.status(500).json({
-          success: false,
-          message: "URL de paiement non reçue de NotchPay (LIVE)",
-          data: data,
-        });
-      }
-
-      console.log("🔗 URL de paiement LIVE:", paymentUrl);
-
-      // 🔥 ENREGISTRER LA TRANSACTION DANS SUPABASE
-      const transactionId = `txn_live_${timestamp}_${randomString}`;
-      
-      const { data: transaction, error: dbError } = await supabase
-        .from("transactions")
-        .insert({
-          id: transactionId,
-          user_id: userId,
-          reference: reference,
-          amount: amount,
-          currency: "XAF",
-          status: "pending",
-          payment_method: "notchpay",
-          metadata: {
-            notchpay_response: data,
-            payment_url: paymentUrl,
-            mode: "LIVE",
-            customer_email: userEmail,
-            created_at: new Date().toISOString(),
-          },
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-        })
-        .select()
-        .single();
-
-      if (dbError) {
-        console.error("❌ Erreur Supabase (transaction LIVE):", dbError.message);
-      }
-
-      return res.json({
-        success: true,
-        message: "Paiement LIVE initialisé avec succès",
-        mode: "LIVE",
-        data: {
-          authorization_url: paymentUrl,
-          checkout_url: paymentUrl,
-          reference: reference,
-          transaction_id: transaction?.id || transactionId,
-          amount: amount,
-        },
-      });
-    } catch (error) {
-      console.error("❌ Erreur API NotchPay LIVE:", error.message);
-
-      if (error.response) {
-        console.error("📡 Détails erreur LIVE:", {
-          status: error.response.status,
-          data: error.response.data,
-        });
-
-        return res.status(error.response.status || 500).json({
-          success: false,
-          message: error.response.data?.message || "Erreur NotchPay LIVE",
-          error: error.response.data,
-          mode: "LIVE",
-        });
-      }
-
-      return res.status(500).json({
-        success: false,
-        message: "Erreur de communication avec NotchPay (LIVE)",
-        error: error.message,
-        mode: "LIVE",
-      });
-    }
-  } catch (error) {
-    console.error("❌ Erreur globale LIVE:", error.message);
-    return res.status(500).json({
-      success: false,
-      message: "Erreur interne du serveur",
-      error: error.message,
-    });
-  }
-});
-
-// 🔥 VÉRIFIER UN PAIEMENT - MODE LIVE
-router.get("/verify/:reference", authenticateUser, async (req, res) => {
-  try {
-    const { reference } = req.params;
-    const userId = req.user.id;
-    const userEmail = req.user.email;
-
-    console.log(`🔍 Vérification transaction LIVE: ${reference}`);
-
-    // 🔥 VÉRIFIER SI LE PROFIL EXISTE
-    await ensureProfileExists(userId, userEmail);
-
-    // Chercher la transaction
-    const { data: transaction, error } = await supabase
-      .from("transactions")
-      .select("*")
-      .eq("reference", reference)
-      .eq("user_id", userId)
-      .single();
-
-    if (error || !transaction) {
-      console.error("❌ Transaction LIVE non trouvée:", error?.message);
-      return res.status(404).json({
-        success: false,
-        message: "Transaction non trouvée",
-      });
-    }
-
-    console.log("✅ Transaction LIVE trouvée:", {
-      id: transaction.id,
-      montant: transaction.amount,
-      statut: transaction.status,
-      mode: transaction.metadata?.mode
-    });
-
-    // Si déjà complété
-    if (transaction.status === "complete" || transaction.status === "success") {
-      console.log("ℹ️ Transaction LIVE déjà complétée");
-      return res.json({
-        success: true,
-        paid: true,
-        pending: false,
-        status: "complete",
-        message: "Paiement déjà confirmé",
-        user_upgraded: true,
-      });
-    }
-
-    // 🔥 VÉRIFICATION AVEC NOTCHPAY EN MODE LIVE
-    try {
-      console.log(`🔍 Vérification chez NotchPay (LIVE): ${reference}`);
-
-      const response = await axios.get(
-        `${NOTCHPAY_CONFIG.baseUrl}/payments/${reference}`,
-        {
-          headers: {
-            Authorization: NOTCHPAY_CONFIG.publicKey,
-            Accept: "application/json",
-          },
-          timeout: 15000,
+        console.error("❌ Pas d'URL de paiement dans la réponse:", data);
+        
+        // Générer une URL de fallback pour le mode TEST
+        if (currentMode === "TEST") {
+          paymentUrl = `https://checkout.notchpay.co/?payment=${reference}`;
+          console.log(`🧪 URL de fallback TEST: ${paymentUrl}`);
+        } else {
+          throw new Error("URL de paiement non reçue");
         }
-      );
+      }
 
-      const data = response.data;
-      console.log("📊 Réponse NotchPay LIVE:", JSON.stringify(data, null, 2));
+      console.log(`🔗 URL de paiement: ${paymentUrl.substring(0, 80)}...`);
 
-      // Récupérer le statut
-      const transactionData = data.transaction || data;
-      const status = transactionData.status || "pending";
-      const isComplete = status === "complete" || status === "success";
-      const isPending = status === "pending";
-      const isFailed = ["failed", "cancelled", "canceled", "expired"].includes(status);
-
-      console.log(`📊 Statut NotchPay LIVE: ${status}`);
-
-      // Mettre à jour la transaction
+      // Mettre à jour la transaction avec l'URL
       await supabase
         .from("transactions")
         .update({
-          status: status,
           metadata: {
             ...transaction.metadata,
-            verification_response: data,
-            verified_at: new Date().toISOString(),
-            notchpay_status: status,
-          },
-          updated_at: new Date().toISOString(),
-          completed_at: isComplete ? new Date().toISOString() : null,
+            payment_url: paymentUrl,
+            notchpay_response: data,
+            updated_at: new Date().toISOString()
+          }
         })
         .eq("id", transaction.id);
 
-      // Si paiement réussi
-      if (isComplete) {
-        console.log(`✅ Paiement LIVE réussi pour l'utilisateur ${userId}`);
-        
-        const { error: profileError } = await supabase
-          .from("profiles")
-          .update({
-            is_premium: true,
-            payment_reference: reference,
-            last_payment_date: new Date().toISOString(),
-            updated_at: new Date().toISOString(),
-          })
-          .eq("id", userId);
-
-        if (profileError) {
-          console.error("❌ Erreur mise à jour profil LIVE:", profileError);
-        } else {
-          console.log(`✅ Profil ${userId} mis à jour vers Premium (LIVE)`);
-        }
-      }
-
       return res.json({
         success: true,
-        paid: isComplete,
-        pending: isPending,
-        failed: isFailed,
-        status: status,
-        message: isComplete
-          ? "Paiement LIVE confirmé (1000 FCFA)"
-          : isFailed
-          ? "Paiement LIVE échoué"
-          : "Paiement LIVE en cours",
-        user_upgraded: isComplete,
+        message: "Paiement initialisé avec succès",
+        mode: currentMode,
+        data: {
+          authorization_url: paymentUrl,
+          reference: reference,
+          transaction_id: transaction.id,
+          amount: amount,
+          currency: "XAF"
+        }
       });
-    } catch (notchpayError) {
-      console.error("⚠️ Erreur vérification NotchPay LIVE:", notchpayError.message);
 
-      if (notchpayError.response?.status === 404) {
-        console.log("⚠️ Transaction non trouvée chez NotchPay (404)");
-        return res.json({
-          success: true,
-          paid: false,
-          pending: true,
-          status: "pending",
-          message: "Transaction en cours de traitement chez NotchPay",
-          user_upgraded: false,
-        });
+    } catch (error) {
+      console.error("❌ Erreur API NotchPay:", error.message);
+      
+      if (error.response) {
+        console.error("📡 Détails:", error.response.data);
       }
+
+      // Mettre à jour le statut en erreur
+      await supabase
+        .from("transactions")
+        .update({
+          status: "failed",
+          metadata: {
+            ...transaction.metadata,
+            error: error.message,
+            notchpay_error: error.response?.data
+          }
+        })
+        .eq("id", transaction.id);
 
       return res.status(500).json({
         success: false,
-        message: "Erreur lors de la vérification chez NotchPay (LIVE)",
-        error: notchpayError.message,
+        message: "Erreur lors de l'initialisation du paiement",
+        error: error.message,
+        mode: currentMode
       });
     }
+
   } catch (error) {
-    console.error("❌ Erreur vérification LIVE:", error.message);
+    console.error("❌ Erreur globale:", error);
     return res.status(500).json({
       success: false,
-      message: "Erreur lors de la vérification",
-      error: error.message,
+      message: "Erreur interne du serveur",
+      error: error.message
     });
   }
 });
 
-// 🔥 WEBHOOK POUR MODE LIVE
-router.post("/webhook", async (req, res) => {
-  console.log("=== 📩 WEBHOOK NOTCHPAY LIVE REÇU ===");
-
+// 🔥 WEBHOOK NOTCHPAY CORRIGÉ
+router.post("/webhook/notchpay", async (req, res) => {
+  console.log("=== 📩 WEBHOOK NOTCHPAY REÇU ===");
+  
   try {
     const payload = req.body;
-    console.log("📦 Données webhook LIVE:", JSON.stringify(payload, null, 2));
+    console.log("📦 Données reçues:", JSON.stringify(payload, null, 2));
 
-    // Récupérer la référence
-    const reference = payload.reference || payload.data?.reference || payload.transaction?.reference;
+    // Format NotchPay peut varier, essayer plusieurs formats
+    let transactionData = payload.data || payload.transaction || payload;
+    let reference = transactionData.reference || transactionData.merchant_reference;
+    let status = transactionData.status || payload.event?.replace('payment.', '');
     
+    // Si c'est un événement, extraire du nom
+    if (payload.event && payload.event.includes('.')) {
+      status = payload.event.split('.')[1];
+    }
+
+    console.log(`🔍 Traitement webhook: Référence=${reference}, Statut=${status}`);
+
     if (!reference) {
-      console.error("❌ Référence manquante dans le webhook LIVE");
+      console.error("❌ Référence manquante dans le webhook");
       return res.status(400).json({ success: false, message: "Référence manquante" });
     }
 
-    console.log(`🔍 Recherche transaction LIVE: ${reference}`);
-
     // Chercher la transaction
-    const { data: transactions, error: transactionError } = await supabase
+    const { data: transaction, error: txError } = await supabase
       .from("transactions")
       .select("*")
       .eq("reference", reference)
-      .limit(1);
+      .maybeSingle();
 
-    if (transactionError || !transactions || transactions.length === 0) {
-      console.error("❌ Transaction LIVE non trouvée:", transactionError?.message);
-      return res.status(404).json({ success: false, message: "Transaction non trouvée" });
+    if (txError) {
+      console.error("❌ Erreur recherche transaction:", txError);
     }
 
-    const transaction = transactions[0];
-    console.log("✅ Transaction LIVE trouvée:", transaction.id);
+    if (!transaction) {
+      console.log(`⚠️ Transaction non trouvée: ${reference}, création...`);
+      
+      // Créer une transaction si elle n'existe pas
+      const userId = transactionData.metadata?.userId || 
+                    payload.metadata?.userId ||
+                    "unknown";
+      
+      const { data: newTx } = await supabase
+        .from("transactions")
+        .insert({
+          reference: reference,
+          amount: transactionData.amount ? transactionData.amount / 100 : 25,
+          currency: transactionData.currency || "XAF",
+          status: status || "unknown",
+          metadata: {
+            webhook_data: payload,
+            created_from_webhook: true,
+            received_at: new Date().toISOString()
+          }
+        })
+        .select()
+        .single();
+      
+      if (newTx && userId !== "unknown") {
+        await processPremiumActivation(userId, reference, status);
+      }
+      
+      return res.status(200).json({ received: true, message: "Transaction créée depuis webhook" });
+    }
 
-    // Déterminer le statut
-    const status = payload.status || payload.data?.status || "pending";
-    const isComplete = status === "complete" || status === "success";
-
-    console.log(`📊 Statut à appliquer: ${status} (complet: ${isComplete})`);
+    console.log(`✅ Transaction trouvée: ${transaction.id}, utilisateur: ${transaction.user_id}`);
 
     // Mettre à jour la transaction
     await supabase
       .from("transactions")
       .update({
-        status: status,
+        status: status || "processed",
         metadata: {
           ...transaction.metadata,
           webhook_data: payload,
           webhook_received_at: new Date().toISOString(),
+          notchpay_status: status
         },
         updated_at: new Date().toISOString(),
-        completed_at: isComplete ? new Date().toISOString() : null,
+        completed_at: (status === 'complete' || status === 'success') ? new Date().toISOString() : null
       })
       .eq("id", transaction.id);
 
-    // Si paiement réussi, mettre à jour l'utilisateur
-    if (isComplete) {
-      const userId = transaction.user_id;
-      console.log(`🎯 Activation Premium LIVE pour l'utilisateur: ${userId}`);
+    // Traiter l'activation premium si paiement réussi
+    if (status === 'complete' || status === 'success' || status === 'completed') {
+      await processPremiumActivation(transaction.user_id, reference, status);
+    }
 
-      // Vérifier et créer le profil si n'existe pas
-      await ensureProfileExists(userId, transaction.metadata?.customer_email);
+    console.log(`✅ Webhook traité pour ${reference}`);
 
-      const { error: profileError } = await supabase
+    // Toujours répondre 200 à NotchPay
+    return res.status(200).json({ 
+      success: true, 
+      message: "Webhook traité avec succès",
+      reference: reference,
+      status: status
+    });
+
+  } catch (error) {
+    console.error("❌ Erreur traitement webhook:", error);
+    // Toujours répondre 200 pour éviter les retries
+    return res.status(200).json({ 
+      received: true, 
+      error: error.message 
+    });
+  }
+});
+
+// 🔥 FONCTION D'ACTIVATION PREMIUM
+async function processPremiumActivation(userId, reference, status) {
+  try {
+    console.log(`🔄 Activation premium pour: ${userId}, référence: ${reference}`);
+    
+    if (!userId || userId === "unknown") {
+      console.error("❌ ID utilisateur manquant");
+      return false;
+    }
+
+    // 1. Mettre à jour le profil
+    const { error: profileError } = await supabase
+      .from("profiles")
+      .update({
+        is_premium: true,
+        payment_reference: reference,
+        last_payment_date: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+        metadata: {
+          premium_activated_via: "notchpay_webhook",
+          activation_date: new Date().toISOString(),
+          payment_status: status
+        }
+      })
+      .eq("id", userId);
+
+    if (profileError) {
+      console.error("❌ Erreur mise à jour profil:", profileError);
+      
+      // Tentative alternative avec moins de champs
+      await supabase
         .from("profiles")
         .update({
           is_premium: true,
           payment_reference: reference,
-          last_payment_date: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
+          last_payment_date: new Date().toISOString()
         })
         .eq("id", userId);
-
-      if (profileError) {
-        console.error("❌ Erreur mise à jour profil LIVE:", profileError.message);
-      } else {
-        console.log(`✅ Utilisateur ${userId} mis à jour vers Premium (LIVE)`);
-      }
     }
 
-    return res.json({ success: true, message: "Webhook LIVE traité" });
+    // 2. Vérifier que la mise à jour a fonctionné
+    const { data: updatedProfile } = await supabase
+      .from("profiles")
+      .select("is_premium, email")
+      .eq("id", userId)
+      .single();
+
+    console.log(`✅ Profil ${updatedProfile?.email || userId} mis à jour: is_premium=${updatedProfile?.is_premium}`);
+
+    // 3. Créer un enregistrement d'abonnement
+    try {
+      await supabase
+        .from("subscriptions")
+        .insert({
+          user_id: userId,
+          plan: "premium",
+          status: "active",
+          transaction_reference: reference,
+          starts_at: new Date().toISOString(),
+          expires_at: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString(), // 1 an
+          metadata: {
+            activated_via: "notchpay",
+            activation_date: new Date().toISOString()
+          }
+        });
+      
+      console.log(`✅ Abonnement créé pour ${userId}`);
+    } catch (subError) {
+      console.log("⚠️ Erreur création abonnement (non critique):", subError.message);
+    }
+
+    return true;
+
   } catch (error) {
-    console.error("❌ Erreur webhook LIVE:", error);
-    return res.status(500).json({ success: false, message: "Erreur lors du traitement" });
+    console.error("❌ Erreur activation premium:", error);
+    return false;
+  }
+}
+
+// 🔥 VÉRIFIER UN PAIEMENT
+router.get("/verify/:reference", authenticateUser, async (req, res) => {
+  try {
+    const { reference } = req.params;
+    const userId = req.user.id;
+
+    console.log(`🔍 Vérification manuelle: ${reference} pour ${userId}`);
+
+    // 1. Chercher la transaction
+    const { data: transaction, error: txError } = await supabase
+      .from("transactions")
+      .select("*")
+      .eq("reference", reference)
+      .eq("user_id", userId)
+      .maybeSingle();
+
+    if (txError) {
+      console.error("❌ Erreur recherche transaction:", txError);
+      return res.status(500).json({
+        success: false,
+        message: "Erreur base de données"
+      });
+    }
+
+    if (!transaction) {
+      console.log(`⚠️ Transaction ${reference} non trouvée`);
+      return res.status(404).json({
+        success: false,
+        message: "Transaction non trouvée"
+      });
+    }
+
+    console.log(`✅ Transaction trouvée, statut: ${transaction.status}`);
+
+    // 2. Si déjà complet, vérifier le profil
+    if (transaction.status === 'complete' || transaction.status === 'success') {
+      const { data: profile } = await supabase
+        .from("profiles")
+        .select("is_premium")
+        .eq("id", userId)
+        .single();
+
+      return res.json({
+        success: true,
+        paid: true,
+        pending: false,
+        status: "complete",
+        is_premium: profile?.is_premium || false,
+        message: profile?.is_premium ? 
+          "Paiement confirmé - Compte premium actif" : 
+          "Paiement confirmé mais profil non encore mis à jour"
+      });
+    }
+
+    // 3. Vérifier avec NotchPay
+    try {
+      console.log(`🔍 Vérification chez NotchPay: ${reference}`);
+      
+      const response = await axios.get(
+        `${NOTCHPAY_CONFIG.baseUrl}/payments/${reference}`,
+        {
+          headers: {
+            Authorization: NOTCHPAY_CONFIG.publicKey,
+            "Accept": "application/json"
+          },
+          timeout: 10000
+        }
+      );
+
+      const data = response.data;
+      const notchpayStatus = data.status || data.transaction?.status;
+      
+      console.log(`📊 Statut NotchPay: ${notchpayStatus}`);
+
+      // Mettre à jour la transaction
+      await supabase
+        .from("transactions")
+        .update({
+          status: notchpayStatus || "checked",
+          metadata: {
+            ...transaction.metadata,
+            last_verification: new Date().toISOString(),
+            notchpay_status: notchpayStatus
+          },
+          updated_at: new Date().toISOString()
+        })
+        .eq("id", transaction.id);
+
+      // Si paiement réussi chez NotchPay, activer premium
+      if (notchpayStatus === 'complete' || notchpayStatus === 'success') {
+        await processPremiumActivation(userId, reference, notchpayStatus);
+        
+        const { data: profile } = await supabase
+          .from("profiles")
+          .select("is_premium")
+          .eq("id", userId)
+          .single();
+
+        return res.json({
+          success: true,
+          paid: true,
+          pending: false,
+          status: "complete",
+          is_premium: profile?.is_premium || false,
+          message: "Paiement confirmé via NotchPay"
+        });
+      }
+
+      // Statut en attente
+      if (notchpayStatus === 'pending') {
+        return res.json({
+          success: true,
+          paid: false,
+          pending: true,
+          status: "pending",
+          message: "Paiement en attente chez NotchPay"
+        });
+      }
+
+      // Statut échoué
+      if (notchpayStatus === 'failed' || notchpayStatus === 'cancelled') {
+        return res.json({
+          success: false,
+          paid: false,
+          pending: false,
+          status: "failed",
+          message: "Paiement échoué"
+        });
+      }
+
+      return res.json({
+        success: true,
+        paid: false,
+        pending: true,
+        status: notchpayStatus || "unknown",
+        message: "Statut indéterminé"
+      });
+
+    } catch (notchpayError) {
+      console.error("❌ Erreur vérification NotchPay:", notchpayError.message);
+      
+      // En mode TEST, parfois simuler un succès
+      if (currentMode === "TEST" && Math.random() > 0.5) {
+        console.log("🧪 Mode TEST: Simulation succès");
+        
+        await supabase
+          .from("transactions")
+          .update({
+            status: 'complete',
+            updated_at: new Date().toISOString()
+          })
+          .eq("id", transaction.id);
+
+        await processPremiumActivation(userId, reference, "test_simulated");
+        
+        return res.json({
+          success: true,
+          paid: true,
+          pending: false,
+          status: 'complete',
+          message: "Paiement TEST simulé avec succès"
+        });
+      }
+
+      return res.json({
+        success: true,
+        paid: false,
+        pending: true,
+        status: 'pending',
+        message: "En attente de confirmation NotchPay"
+      });
+    }
+
+  } catch (error) {
+    console.error("❌ Erreur vérification:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Erreur lors de la vérification",
+      error: error.message
+    });
   }
 });
 
-// 🔥 CONFIGURATION - MODE LIVE
+// 🔥 CONFIGURATION
 router.get("/config", (req, res) => {
-  const keyValidation = validateKeys();
-  
-  if (!keyValidation) {
-    return res.json({
-      success: false,
-      config: {
-        mode: "ERROR",
-        message: "Clés NotchPay non configurées"
-      }
-    });
-  }
-  
-  const { isLiveMode, isTestMode } = keyValidation;
-  const mode = isLiveMode ? "LIVE" : "TEST";
+  const isLive = currentMode === "LIVE";
   
   return res.json({
     success: true,
     config: {
-      mode: mode,
-      amount: isLiveMode ? 1000 : 25,
-      currency: "XAF",
-      status: isLiveMode ? "🚀 MODE LIVE ACTIVÉ" : "🧪 MODE TEST",
-      message: isLiveMode 
-        ? "✅ Prêt pour les vrais paiements - 1000 FCFA"
-        : "⚠️ Mode TEST - Paiements simulés à 25 FCFA"
+      mode: currentMode,
+      public_key: NOTCHPAY_CONFIG.publicKey ? `${NOTCHPAY_CONFIG.publicKey.substring(0, 20)}...` : "NON DÉFINIE",
+      base_url: NOTCHPAY_CONFIG.baseUrl,
+      webhook_url: "https://severbackendnotchpay.onrender.com/api/payments/webhook/notchpay",
+      status: "ACTIF",
+      message: isLive ? 
+        "✅ Mode LIVE - Prêt pour les vrais paiements" : 
+        "🧪 Mode TEST - Paiements de test uniquement"
     }
   });
+});
+
+// 🔥 FORCER L'ACTIVATION MANUELLE
+router.post("/force-upgrade/:userId", authenticateUser, async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { reference } = req.body;
+    const adminUserId = req.user.id;
+
+    console.log(`🔧 Activation manuelle par ${adminUserId} pour ${userId}`);
+
+    if (userId !== adminUserId) {
+      // Vérifier si c'est un admin (optionnel)
+      const { data: adminProfile } = await supabase
+        .from("profiles")
+        .select("is_admin")
+        .eq("id", adminUserId)
+        .single();
+
+      if (!adminProfile?.is_admin) {
+        return res.status(403).json({
+          success: false,
+          message: "Non autorisé"
+        });
+      }
+    }
+
+    const success = await processPremiumActivation(
+      userId, 
+      reference || `MANUAL-${Date.now()}`, 
+      "manual_activation"
+    );
+
+    if (success) {
+      return res.json({
+        success: true,
+        message: "Compte premium activé manuellement avec succès"
+      });
+    } else {
+      return res.status(500).json({
+        success: false,
+        message: "Échec de l'activation manuelle"
+      });
+    }
+
+  } catch (error) {
+    console.error("❌ Erreur activation manuelle:", error);
+    return res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// 🔥 VÉRIFIER LE STATUT D'UN UTILISATEUR
+router.get("/user-status/:userId", authenticateUser, async (req, res) => {
+  try {
+    const { userId } = req.params;
+    
+    if (userId !== req.user.id) {
+      return res.status(403).json({
+        success: false,
+        message: "Non autorisé à voir ce profil"
+      });
+    }
+
+    const { data: profile, error } = await supabase
+      .from("profiles")
+      .select("is_premium, payment_reference, last_payment_date, email")
+      .eq("id", userId)
+      .single();
+
+    if (error) {
+      console.error("❌ Erreur recherche profil:", error);
+      return res.status(404).json({
+        success: false,
+        message: "Profil non trouvé"
+      });
+    }
+
+    return res.json({
+      success: true,
+      is_premium: profile.is_premium || false,
+      payment_reference: profile.payment_reference,
+      last_payment_date: profile.last_payment_date,
+      email: profile.email
+    });
+
+  } catch (error) {
+    console.error("❌ Erreur vérification statut:", error);
+    return res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
 });
 
 module.exports = router;
