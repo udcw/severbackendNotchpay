@@ -24,7 +24,69 @@ function detectMode(publicKey) {
 const currentMode = detectMode(NOTCHPAY_CONFIG.publicKey);
 console.log(`🔧 Mode NotchPay détecté: ${currentMode}`);
 
-// 🔥 INITIALISER UN PAIEMENT
+// 🔥 FONCTION D'ACTIVATION PREMIUM - OPTIMISÉE
+async function processPremiumActivation(userId, reference, status) {
+  try {
+    console.log(`🔄 Activation premium pour: ${userId}, référence: ${reference}`);
+    
+    if (!userId || userId === "unknown") {
+      console.error("❌ ID utilisateur manquant");
+      return false;
+    }
+
+    // 1. Mettre à jour le profil
+    const { error: profileError } = await supabase
+      .from("profiles")
+      .update({
+        is_premium: true,
+        payment_reference: reference,
+        last_payment_date: new Date().toISOString(),
+        updated_at: new Date().toISOString()
+      })
+      .eq("id", userId);
+
+    if (profileError) {
+      console.error("❌ Erreur mise à jour profil:", profileError);
+      return false;
+    }
+
+    // 2. Vérifier que la mise à jour a fonctionné
+    const { data: updatedProfile } = await supabase
+      .from("profiles")
+      .select("is_premium, email")
+      .eq("id", userId)
+      .single();
+
+    console.log(`✅ Profil ${updatedProfile?.email || userId} mis à jour: is_premium=${updatedProfile?.is_premium}`);
+
+    // 3. Créer un enregistrement d'abonnement (si la table existe)
+    try {
+      await supabase
+        .from("subscriptions")
+        .insert({
+          user_id: userId,
+          plan: "premium",
+          status: "active",
+          transaction_reference: reference,
+          starts_at: new Date().toISOString(),
+          expires_at: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString() // 1 an
+        });
+      
+      console.log(`✅ Abonnement créé pour ${userId}`);
+    } catch (subError) {
+      console.log("⚠️ Table 'subscriptions' peut-être inexistante:", subError.message);
+      // Ce n'est pas critique, continuer
+    }
+
+    return true;
+
+  } catch (error) {
+    console.error("❌ Erreur activation premium:", error);
+    return false;
+  }
+}
+
+// 🔥 INITIALISER UN PAIEMENT - CORRIGÉ
 router.post("/initialize", authenticateUser, async (req, res) => {
   console.log("=== 🚀 INITIALISATION PAIEMENT ===");
 
@@ -51,7 +113,7 @@ router.post("/initialize", authenticateUser, async (req, res) => {
     const reference = `KAMERUN-${timestamp}-${randomStr}`.toUpperCase();
     const amountInCents = Math.round(amount * 100);
 
-    // Créer d'abord l'enregistrement dans Supabase
+    // Créer d'abord l'enregistrement dans Supabase (sans colonne description)
     const { data: transaction, error: txError } = await supabase
       .from("transactions")
       .insert({
@@ -60,9 +122,9 @@ router.post("/initialize", authenticateUser, async (req, res) => {
         amount: amount,
         currency: "XAF",
         status: "pending",
-        description: description,
         metadata: {
           user_email: userEmail,
+          description: description,
           mode: currentMode,
           created_at: new Date().toISOString()
         }
@@ -330,85 +392,6 @@ router.post("/webhook/notchpay", async (req, res) => {
   }
 });
 
-// 🔥 FONCTION D'ACTIVATION PREMIUM
-async function processPremiumActivation(userId, reference, status) {
-  try {
-    console.log(`🔄 Activation premium pour: ${userId}, référence: ${reference}`);
-    
-    if (!userId || userId === "unknown") {
-      console.error("❌ ID utilisateur manquant");
-      return false;
-    }
-
-    // 1. Mettre à jour le profil
-    const { error: profileError } = await supabase
-      .from("profiles")
-      .update({
-        is_premium: true,
-        payment_reference: reference,
-        last_payment_date: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-        metadata: {
-          premium_activated_via: "notchpay_webhook",
-          activation_date: new Date().toISOString(),
-          payment_status: status
-        }
-      })
-      .eq("id", userId);
-
-    if (profileError) {
-      console.error("❌ Erreur mise à jour profil:", profileError);
-      
-      // Tentative alternative avec moins de champs
-      await supabase
-        .from("profiles")
-        .update({
-          is_premium: true,
-          payment_reference: reference,
-          last_payment_date: new Date().toISOString()
-        })
-        .eq("id", userId);
-    }
-
-    // 2. Vérifier que la mise à jour a fonctionné
-    const { data: updatedProfile } = await supabase
-      .from("profiles")
-      .select("is_premium, email")
-      .eq("id", userId)
-      .single();
-
-    console.log(`✅ Profil ${updatedProfile?.email || userId} mis à jour: is_premium=${updatedProfile?.is_premium}`);
-
-    // 3. Créer un enregistrement d'abonnement
-    try {
-      await supabase
-        .from("subscriptions")
-        .insert({
-          user_id: userId,
-          plan: "premium",
-          status: "active",
-          transaction_reference: reference,
-          starts_at: new Date().toISOString(),
-          expires_at: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString(), // 1 an
-          metadata: {
-            activated_via: "notchpay",
-            activation_date: new Date().toISOString()
-          }
-        });
-      
-      console.log(`✅ Abonnement créé pour ${userId}`);
-    } catch (subError) {
-      console.log("⚠️ Erreur création abonnement (non critique):", subError.message);
-    }
-
-    return true;
-
-  } catch (error) {
-    console.error("❌ Erreur activation premium:", error);
-    return false;
-  }
-}
-
 // 🔥 VÉRIFIER UN PAIEMENT
 router.get("/verify/:reference", authenticateUser, async (req, res) => {
   try {
@@ -620,20 +603,12 @@ router.post("/force-upgrade/:userId", authenticateUser, async (req, res) => {
 
     console.log(`🔧 Activation manuelle par ${adminUserId} pour ${userId}`);
 
+    // Simplification: Autorisez seulement si c'est le même utilisateur
     if (userId !== adminUserId) {
-      // Vérifier si c'est un admin (optionnel)
-      const { data: adminProfile } = await supabase
-        .from("profiles")
-        .select("is_admin")
-        .eq("id", adminUserId)
-        .single();
-
-      if (!adminProfile?.is_admin) {
-        return res.status(403).json({
-          success: false,
-          message: "Non autorisé"
-        });
-      }
+      return res.status(403).json({
+        success: false,
+        message: "Vous ne pouvez activer que votre propre compte"
+      });
     }
 
     const success = await processPremiumActivation(
