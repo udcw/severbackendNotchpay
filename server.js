@@ -49,7 +49,7 @@ app.get("/test-webhook", (req, res) => {
         "data": {
           "reference": "TRX-TEST-12345",
           "status": "complete",
-          "amount": 2500,
+          "amount": 25,
           "currency": "XAF",
           "customer": {
             "email": "test@example.com"
