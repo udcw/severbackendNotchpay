@@ -4,6 +4,8 @@ const { authenticateUser, supabase } = require("../middleware/auth");
 
 const router = express.Router();
 
+// Supprimez le deuxième `const express = require("express");` et la création du router
+
 // 🔥 CONFIGURATION NOTCHPAY
 const NOTCHPAY_CONFIG = {
   publicKey: process.env.NOTCHPAY_PUBLIC_KEY || "pk.SBXvy0Fe1pGfFWwABmBAw7aSu8xcSaHZNiW2aRxWZe9oF2m59rbjtRa0je1UhqJfQ3NGn3TzyqrYHbLFLKElE1nKVSZQJcQ9wAOczNBYG66zHX4svoGmTpaWLDrVY",
@@ -174,7 +176,7 @@ router.post("/initialize", authenticateUser, async (req, res) => {
     };
 
     console.log("📤 Envoi à NotchPay...");
-    console.log("📝 Référence:", reference);
+    console.log("📝 Payload:", JSON.stringify(payload, null, 2));
 
     try {
       const response = await axios.post(
@@ -191,7 +193,7 @@ router.post("/initialize", authenticateUser, async (req, res) => {
       );
 
       const data = response.data;
-      console.log("✅ Réponse NotchPay reçue");
+      console.log("✅ Réponse NotchPay reçue:", JSON.stringify(data, null, 2));
 
       // Extraire l'URL de paiement
       let paymentUrl = data.authorization_url || 
@@ -242,7 +244,11 @@ router.post("/initialize", authenticateUser, async (req, res) => {
       console.error("❌ Erreur API NotchPay:", error.message);
       
       if (error.response) {
-        console.error("📡 Détails:", error.response.data);
+        console.error("📡 Détails de l'erreur:", JSON.stringify(error.response.data, null, 2));
+      } else if (error.request) {
+        console.error("📡 Aucune réponse reçue:", error.request);
+      } else {
+        console.error("📡 Erreur de configuration:", error.message);
       }
 
       await supabase
