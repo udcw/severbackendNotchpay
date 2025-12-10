@@ -4,6 +4,8 @@ const { authenticateUser, supabase } = require("../middleware/auth");
 
 const router = express.Router();
 
+// Supprimez le deuxième `const express = require("express");` et la création du router
+
 // 🔥 CONFIGURATION NOTCHPAY
 const NOTCHPAY_CONFIG = {
   publicKey: process.env.NOTCHPAY_PUBLIC_KEY || "pk.SBXvy0Fe1pGfFWwABmBAw7aSu8xcSaHZNiW2aRxWZe9oF2m59rbjtRa0je1UhqJfQ3NGn3TzyqrYHbLFLKElE1nKVSZQJcQ9wAOczNBYG66zHX4svoGmTpaWLDrVY",
@@ -24,6 +26,73 @@ function detectMode(publicKey) {
 const currentMode = detectMode(NOTCHPAY_CONFIG.publicKey);
 console.log(`🔧 Mode NotchPay détecté: ${currentMode}`);
 
+// 🔥 FONCTION D'ACTIVATION PREMIUM - SEULEMENT APRÈS PAIEMENT RÉUSSI
+async function processPremiumActivation(userId, reference, status) {
+  try {
+    console.log(`🔄 Activation premium pour: ${userId}, référence: ${reference}`);
+    
+    if (!userId || userId === "unknown") {
+      console.error("❌ ID utilisateur manquant");
+      return false;
+    }
+
+    // Vérifier d'abord que le paiement est bien "complete" ou "success"
+    const { data: transaction } = await supabase
+      .from("transactions")
+      .select("status, amount")
+      .eq("reference", reference)
+      .eq("user_id", userId)
+      .single();
+
+    if (!transaction) {
+      console.error("❌ Transaction non trouvée pour cet utilisateur");
+      return false;
+    }
+
+    if (transaction.status !== 'complete' && transaction.status !== 'success') {
+      console.error(`❌ Statut de transaction invalide pour activation: ${transaction.status}`);
+      return false;
+    }
+
+    // Vérifier que le montant est au moins 25 FCFA
+    if (transaction.amount < 25) {
+      console.error(`❌ Montant insuffisant pour activation premium: ${transaction.amount}`);
+      return false;
+    }
+
+    // Mettre à jour le profil
+    const { error: profileError } = await supabase
+      .from("profiles")
+      .update({
+        is_premium: true,
+        payment_reference: reference,
+        last_payment_date: new Date().toISOString(),
+        updated_at: new Date().toISOString()
+      })
+      .eq("id", userId);
+
+    if (profileError) {
+      console.error("❌ Erreur mise à jour profil:", profileError);
+      return false;
+    }
+
+    // Vérifier que la mise à jour a fonctionné
+    const { data: updatedProfile } = await supabase
+      .from("profiles")
+      .select("is_premium, email")
+      .eq("id", userId)
+      .single();
+
+    console.log(`✅ Profil ${updatedProfile?.email || userId} mis à jour: is_premium=${updatedProfile?.is_premium}`);
+
+    return true;
+
+  } catch (error) {
+    console.error("❌ Erreur activation premium:", error);
+    return false;
+  }
+}
+
 // 🔥 INITIALISER UN PAIEMENT
 router.post("/initialize", authenticateUser, async (req, res) => {
   console.log("=== 🚀 INITIALISATION PAIEMENT ===");
@@ -37,7 +106,7 @@ router.post("/initialize", authenticateUser, async (req, res) => {
     console.log(`💰 Montant demandé: ${amount} FCFA`);
     console.log(`📝 Description: ${description}`);
 
-    // Validation
+    // Validation stricte
     if (amount < 25) {
       return res.status(400).json({
         success: false,
@@ -51,7 +120,7 @@ router.post("/initialize", authenticateUser, async (req, res) => {
     const reference = `KAMERUN-${timestamp}-${randomStr}`.toUpperCase();
     const amountInCents = Math.round(amount * 100);
 
-    // Créer d'abord l'enregistrement dans Supabase
+    // Créer l'enregistrement dans Supabase
     const { data: transaction, error: txError } = await supabase
       .from("transactions")
       .insert({
@@ -60,9 +129,9 @@ router.post("/initialize", authenticateUser, async (req, res) => {
         amount: amount,
         currency: "XAF",
         status: "pending",
-        description: description,
         metadata: {
           user_email: userEmail,
+          description: description,
           mode: currentMode,
           created_at: new Date().toISOString()
         }
@@ -80,15 +149,6 @@ router.post("/initialize", authenticateUser, async (req, res) => {
     }
 
     console.log(`✅ Transaction créée en base: ${reference}`);
-
-    // Mettre à jour le profil avec la référence
-    await supabase
-      .from("profiles")
-      .update({
-        payment_reference: reference,
-        updated_at: new Date().toISOString()
-      })
-      .eq("id", userId);
 
     // Données pour NotchPay
     const customerName = req.user.user_metadata?.full_name || 
@@ -116,8 +176,7 @@ router.post("/initialize", authenticateUser, async (req, res) => {
     };
 
     console.log("📤 Envoi à NotchPay...");
-    console.log("📝 Référence:", reference);
-    console.log("🔗 Callback URL:", payload.callback_url);
+    console.log("📝 Payload:", JSON.stringify(payload, null, 2));
 
     try {
       const response = await axios.post(
@@ -134,7 +193,7 @@ router.post("/initialize", authenticateUser, async (req, res) => {
       );
 
       const data = response.data;
-      console.log("✅ Réponse NotchPay reçue");
+      console.log("✅ Réponse NotchPay reçue:", JSON.stringify(data, null, 2));
 
       // Extraire l'URL de paiement
       let paymentUrl = data.authorization_url || 
@@ -145,7 +204,6 @@ router.post("/initialize", authenticateUser, async (req, res) => {
       if (!paymentUrl) {
         console.error("❌ Pas d'URL de paiement dans la réponse:", data);
         
-        // Générer une URL de fallback pour le mode TEST
         if (currentMode === "TEST") {
           paymentUrl = `https://checkout.notchpay.co/?payment=${reference}`;
           console.log(`🧪 URL de fallback TEST: ${paymentUrl}`);
@@ -186,10 +244,13 @@ router.post("/initialize", authenticateUser, async (req, res) => {
       console.error("❌ Erreur API NotchPay:", error.message);
       
       if (error.response) {
-        console.error("📡 Détails:", error.response.data);
+        console.error("📡 Détails de l'erreur:", JSON.stringify(error.response.data, null, 2));
+      } else if (error.request) {
+        console.error("📡 Aucune réponse reçue:", error.request);
+      } else {
+        console.error("📡 Erreur de configuration:", error.message);
       }
 
-      // Mettre à jour le statut en erreur
       await supabase
         .from("transactions")
         .update({
@@ -220,7 +281,7 @@ router.post("/initialize", authenticateUser, async (req, res) => {
   }
 });
 
-// 🔥 WEBHOOK NOTCHPAY CORRIGÉ
+// 🔥 WEBHOOK NOTCHPAY - SEULE SOURCE D'ACTIVATION PREMIUM
 router.post("/webhook/notchpay", async (req, res) => {
   console.log("=== 📩 WEBHOOK NOTCHPAY REÇU ===");
   
@@ -228,12 +289,11 @@ router.post("/webhook/notchpay", async (req, res) => {
     const payload = req.body;
     console.log("📦 Données reçues:", JSON.stringify(payload, null, 2));
 
-    // Format NotchPay peut varier, essayer plusieurs formats
+    // Extraire les informations
     let transactionData = payload.data || payload.transaction || payload;
     let reference = transactionData.reference || transactionData.merchant_reference;
     let status = transactionData.status || payload.event?.replace('payment.', '');
     
-    // Si c'est un événement, extraire du nom
     if (payload.event && payload.event.includes('.')) {
       status = payload.event.split('.')[1];
     }
@@ -259,7 +319,6 @@ router.post("/webhook/notchpay", async (req, res) => {
     if (!transaction) {
       console.log(`⚠️ Transaction non trouvée: ${reference}, création...`);
       
-      // Créer une transaction si elle n'existe pas
       const userId = transactionData.metadata?.userId || 
                     payload.metadata?.userId ||
                     "unknown";
@@ -271,6 +330,7 @@ router.post("/webhook/notchpay", async (req, res) => {
           amount: transactionData.amount ? transactionData.amount / 100 : 25,
           currency: transactionData.currency || "XAF",
           status: status || "unknown",
+          user_id: userId !== "unknown" ? userId : null,
           metadata: {
             webhook_data: payload,
             created_from_webhook: true,
@@ -280,10 +340,8 @@ router.post("/webhook/notchpay", async (req, res) => {
         .select()
         .single();
       
-      if (newTx && userId !== "unknown") {
-        await processPremiumActivation(userId, reference, status);
-      }
-      
+      // NE PAS activer premium si la transaction vient d'être créée depuis le webhook
+      // Attendre une vérification manuelle ou un deuxième webhook
       return res.status(200).json({ received: true, message: "Transaction créée depuis webhook" });
     }
 
@@ -305,14 +363,18 @@ router.post("/webhook/notchpay", async (req, res) => {
       })
       .eq("id", transaction.id);
 
-    // Traiter l'activation premium si paiement réussi
+    // Traiter l'activation premium UNIQUEMENT si paiement réussi
     if (status === 'complete' || status === 'success' || status === 'completed') {
-      await processPremiumActivation(transaction.user_id, reference, status);
+      // Vérifier que l'utilisateur existe et que la transaction est valide
+      if (transaction.user_id && transaction.amount >= 25) {
+        await processPremiumActivation(transaction.user_id, reference, status);
+      } else {
+        console.log(`⚠️ Transaction ${reference} non éligible pour activation premium`);
+      }
     }
 
     console.log(`✅ Webhook traité pour ${reference}`);
 
-    // Toujours répondre 200 à NotchPay
     return res.status(200).json({ 
       success: true, 
       message: "Webhook traité avec succès",
@@ -322,7 +384,6 @@ router.post("/webhook/notchpay", async (req, res) => {
 
   } catch (error) {
     console.error("❌ Erreur traitement webhook:", error);
-    // Toujours répondre 200 pour éviter les retries
     return res.status(200).json({ 
       received: true, 
       error: error.message 
@@ -330,86 +391,7 @@ router.post("/webhook/notchpay", async (req, res) => {
   }
 });
 
-// 🔥 FONCTION D'ACTIVATION PREMIUM
-async function processPremiumActivation(userId, reference, status) {
-  try {
-    console.log(`🔄 Activation premium pour: ${userId}, référence: ${reference}`);
-    
-    if (!userId || userId === "unknown") {
-      console.error("❌ ID utilisateur manquant");
-      return false;
-    }
-
-    // 1. Mettre à jour le profil
-    const { error: profileError } = await supabase
-      .from("profiles")
-      .update({
-        is_premium: true,
-        payment_reference: reference,
-        last_payment_date: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-        metadata: {
-          premium_activated_via: "notchpay_webhook",
-          activation_date: new Date().toISOString(),
-          payment_status: status
-        }
-      })
-      .eq("id", userId);
-
-    if (profileError) {
-      console.error("❌ Erreur mise à jour profil:", profileError);
-      
-      // Tentative alternative avec moins de champs
-      await supabase
-        .from("profiles")
-        .update({
-          is_premium: true,
-          payment_reference: reference,
-          last_payment_date: new Date().toISOString()
-        })
-        .eq("id", userId);
-    }
-
-    // 2. Vérifier que la mise à jour a fonctionné
-    const { data: updatedProfile } = await supabase
-      .from("profiles")
-      .select("is_premium, email")
-      .eq("id", userId)
-      .single();
-
-    console.log(`✅ Profil ${updatedProfile?.email || userId} mis à jour: is_premium=${updatedProfile?.is_premium}`);
-
-    // 3. Créer un enregistrement d'abonnement
-    try {
-      await supabase
-        .from("subscriptions")
-        .insert({
-          user_id: userId,
-          plan: "premium",
-          status: "active",
-          transaction_reference: reference,
-          starts_at: new Date().toISOString(),
-          expires_at: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString(), // 1 an
-          metadata: {
-            activated_via: "notchpay",
-            activation_date: new Date().toISOString()
-          }
-        });
-      
-      console.log(`✅ Abonnement créé pour ${userId}`);
-    } catch (subError) {
-      console.log("⚠️ Erreur création abonnement (non critique):", subError.message);
-    }
-
-    return true;
-
-  } catch (error) {
-    console.error("❌ Erreur activation premium:", error);
-    return false;
-  }
-}
-
-// 🔥 VÉRIFIER UN PAIEMENT
+// 🔥 VÉRIFIER UN PAIEMENT (pour le frontend après redirection)
 router.get("/verify/:reference", authenticateUser, async (req, res) => {
   try {
     const { reference } = req.params;
@@ -417,7 +399,7 @@ router.get("/verify/:reference", authenticateUser, async (req, res) => {
 
     console.log(`🔍 Vérification manuelle: ${reference} pour ${userId}`);
 
-    // 1. Chercher la transaction
+    // Chercher la transaction
     const { data: transaction, error: txError } = await supabase
       .from("transactions")
       .select("*")
@@ -443,7 +425,7 @@ router.get("/verify/:reference", authenticateUser, async (req, res) => {
 
     console.log(`✅ Transaction trouvée, statut: ${transaction.status}`);
 
-    // 2. Si déjà complet, vérifier le profil
+    // Si déjà complet, vérifier le profil
     if (transaction.status === 'complete' || transaction.status === 'success') {
       const { data: profile } = await supabase
         .from("profiles")
@@ -459,11 +441,11 @@ router.get("/verify/:reference", authenticateUser, async (req, res) => {
         is_premium: profile?.is_premium || false,
         message: profile?.is_premium ? 
           "Paiement confirmé - Compte premium actif" : 
-          "Paiement confirmé mais profil non encore mis à jour"
+          "Paiement confirmé - Activation en cours..."
       });
     }
 
-    // 3. Vérifier avec NotchPay
+    // Vérifier avec NotchPay
     try {
       console.log(`🔍 Vérification chez NotchPay: ${reference}`);
       
@@ -499,7 +481,7 @@ router.get("/verify/:reference", authenticateUser, async (req, res) => {
 
       // Si paiement réussi chez NotchPay, activer premium
       if (notchpayStatus === 'complete' || notchpayStatus === 'success') {
-        await processPremiumActivation(userId, reference, notchpayStatus);
+        const activated = await processPremiumActivation(userId, reference, notchpayStatus);
         
         const { data: profile } = await supabase
           .from("profiles")
@@ -513,11 +495,13 @@ router.get("/verify/:reference", authenticateUser, async (req, res) => {
           pending: false,
           status: "complete",
           is_premium: profile?.is_premium || false,
-          message: "Paiement confirmé via NotchPay"
+          message: activated ? 
+            "Paiement confirmé - Compte premium activé" : 
+            "Paiement confirmé mais problème d'activation"
         });
       }
 
-      // Statut en attente
+      // Statuts divers
       if (notchpayStatus === 'pending') {
         return res.json({
           success: true,
@@ -528,7 +512,6 @@ router.get("/verify/:reference", authenticateUser, async (req, res) => {
         });
       }
 
-      // Statut échoué
       if (notchpayStatus === 'failed' || notchpayStatus === 'cancelled') {
         return res.json({
           success: false,
@@ -550,29 +533,9 @@ router.get("/verify/:reference", authenticateUser, async (req, res) => {
     } catch (notchpayError) {
       console.error("❌ Erreur vérification NotchPay:", notchpayError.message);
       
-      // En mode TEST, parfois simuler un succès
-      if (currentMode === "TEST" && Math.random() > 0.5) {
-        console.log("🧪 Mode TEST: Simulation succès");
-        
-        await supabase
-          .from("transactions")
-          .update({
-            status: 'complete',
-            updated_at: new Date().toISOString()
-          })
-          .eq("id", transaction.id);
-
-        await processPremiumActivation(userId, reference, "test_simulated");
-        
-        return res.json({
-          success: true,
-          paid: true,
-          pending: false,
-          status: 'complete',
-          message: "Paiement TEST simulé avec succès"
-        });
-      }
-
+      // En mode TEST, NE PAS simuler de succès automatique
+      // L'utilisateur DOIT vraiment payer
+      
       return res.json({
         success: true,
         paid: false,
@@ -592,88 +555,28 @@ router.get("/verify/:reference", authenticateUser, async (req, res) => {
   }
 });
 
-// 🔥 CONFIGURATION
-router.get("/config", (req, res) => {
+// 🔥 CONFIGURATION (sans accès aux clés sensibles)
+router.get("/config", authenticateUser, (req, res) => {
   const isLive = currentMode === "LIVE";
   
   return res.json({
     success: true,
     config: {
       mode: currentMode,
-      public_key: NOTCHPAY_CONFIG.publicKey ? `${NOTCHPAY_CONFIG.publicKey.substring(0, 20)}...` : "NON DÉFINIE",
       base_url: NOTCHPAY_CONFIG.baseUrl,
       webhook_url: "https://severbackendnotchpay.onrender.com/api/payments/webhook/notchpay",
       status: "ACTIF",
       message: isLive ? 
-        "✅ Mode LIVE - Prêt pour les vrais paiements" : 
-        "🧪 Mode TEST - Paiements de test uniquement"
+        "✅ Mode LIVE - Paiements réels activés" : 
+        "🧪 Mode TEST - Paiements de démonstration"
     }
   });
 });
 
-// 🔥 FORCER L'ACTIVATION MANUELLE
-router.post("/force-upgrade/:userId", authenticateUser, async (req, res) => {
+// 🔥 VÉRIFIER LE STATUT PREMIUM DE L'UTILISATEUR
+router.get("/user-status", authenticateUser, async (req, res) => {
   try {
-    const { userId } = req.params;
-    const { reference } = req.body;
-    const adminUserId = req.user.id;
-
-    console.log(`🔧 Activation manuelle par ${adminUserId} pour ${userId}`);
-
-    if (userId !== adminUserId) {
-      // Vérifier si c'est un admin (optionnel)
-      const { data: adminProfile } = await supabase
-        .from("profiles")
-        .select("is_admin")
-        .eq("id", adminUserId)
-        .single();
-
-      if (!adminProfile?.is_admin) {
-        return res.status(403).json({
-          success: false,
-          message: "Non autorisé"
-        });
-      }
-    }
-
-    const success = await processPremiumActivation(
-      userId, 
-      reference || `MANUAL-${Date.now()}`, 
-      "manual_activation"
-    );
-
-    if (success) {
-      return res.json({
-        success: true,
-        message: "Compte premium activé manuellement avec succès"
-      });
-    } else {
-      return res.status(500).json({
-        success: false,
-        message: "Échec de l'activation manuelle"
-      });
-    }
-
-  } catch (error) {
-    console.error("❌ Erreur activation manuelle:", error);
-    return res.status(500).json({
-      success: false,
-      error: error.message
-    });
-  }
-});
-
-// 🔥 VÉRIFIER LE STATUT D'UN UTILISATEUR
-router.get("/user-status/:userId", authenticateUser, async (req, res) => {
-  try {
-    const { userId } = req.params;
-    
-    if (userId !== req.user.id) {
-      return res.status(403).json({
-        success: false,
-        message: "Non autorisé à voir ce profil"
-      });
-    }
+    const userId = req.user.id;
 
     const { data: profile, error } = await supabase
       .from("profiles")
@@ -703,6 +606,21 @@ router.get("/user-status/:userId", authenticateUser, async (req, res) => {
       success: false,
       error: error.message
     });
+  }
+});
+
+// 🔥 ROUTE POUR REDIRIGER APRÈS PAIEMENT (pour le frontend)
+router.get("/callback/:reference", async (req, res) => {
+  try {
+    const { reference } = req.params;
+    
+    // Rediriger vers le frontend avec la référence
+    const frontendUrl = `https://kamerun-news.com/payment-callback?reference=${reference}`;
+    
+    res.redirect(frontendUrl);
+  } catch (error) {
+    console.error("❌ Erreur redirection:", error);
+    res.redirect(`https://kamerun-news.com/payment-error`);
   }
 });
 

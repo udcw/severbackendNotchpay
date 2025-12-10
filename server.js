@@ -49,7 +49,7 @@ app.get("/test-webhook", (req, res) => {
         "data": {
           "reference": "TRX-TEST-12345",
           "status": "complete",
-          "amount": 2500,
+          "amount": 25,
           "currency": "XAF",
           "customer": {
             "email": "test@example.com"
@@ -100,9 +100,16 @@ app.listen(PORT, () => {
   console.log(`🌍 Accessible depuis: https://severbackendnotchpay.onrender.com`);
   console.log(`📡 Mode: ${process.env.NODE_ENV || 'development'}`);
   console.log(`🔧 Webhook NotchPay: https://severbackendnotchpay.onrender.com/api/payments/webhook/notchpay`);
-  console.log(`⚙️ Variables d'environnement chargées:`, {
+  
+  // Vérification des variables d'environnement (sans afficher les valeurs sensibles)
+  const envVars = {
     NODE_ENV: process.env.NODE_ENV,
-    SUPABASE_URL: process.env.SUPABASE_URL ? '✓' : '✗',
-    NOTCHPAY_PUBLIC_KEY: process.env.NOTCHPAY_PUBLIC_KEY ? '✓' : '✗'
-  });
+    PORT: process.env.PORT || '4000 (default)',
+    SUPABASE_URL: process.env.SUPABASE_URL ? '✓ Configuré' : '✗ Manquant',
+    NOTCHPAY_PUBLIC_KEY: process.env.NOTCHPAY_PUBLIC_KEY ? 
+      '✓ Configuré (' + (process.env.NOTCHPAY_PUBLIC_KEY.includes('SBX') ? 'TEST' : 'LIVE') + ')' : 
+      '✗ Manquant'
+  };
+  
+  console.log(`⚙️ Variables d'environnement:`, envVars);
 });
