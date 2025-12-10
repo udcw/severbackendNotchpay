@@ -4,7 +4,7 @@ const { createClient } = require('@supabase/supabase-js');
 // Initialiser Supabase
 const supabase = createClient(
   process.env.SUPABASE_URL,
-  process.env.SUPABASE_
+  process.env.SUPABASE_KEY,
   process.env.SUPABASE_ANON_KEY  // Utilisez SUPABASE_ANON_KEY au lieu de SUPABASE_K
 );
 
