@@ -28,7 +28,7 @@ function detectMode(publicKey) {
 const currentMode = detectMode(NOTCHPAY_CONFIG.publicKey);
 console.log(`Mode NotchPay détecté: ${currentMode}`);
 
-// FONCTION D'ACTIVATION PREMIUM - SEULEMENT APRÈS PAIEMENT RÉUSSI
+// FONCTION D'ACTIVATION PREMIUM - SEULEMENT APRÈS PAIEMENT RÉUSSI DE 25 FCFA
 async function processPremiumActivation(userId, reference, status) {
   try {
     console.log(`Activation premium pour: ${userId}, référence: ${reference}`);
@@ -58,10 +58,10 @@ async function processPremiumActivation(userId, reference, status) {
       return false;
     }
 
-    // Vérifier que le montant est au moins 25 FCFA
-    if (transaction.amount < 25) {
+    // Vérifier que le montant est EXACTEMENT 25 FCFA
+    if (transaction.amount !== 25) {
       console.error(
-        `Montant insuffisant pour activation premium: ${transaction.amount}`
+        `Montant incorrect pour activation premium: ${transaction.amount} FCFA (attendu: 25 FCFA)`
       );
       return false;
     }
@@ -102,33 +102,24 @@ async function processPremiumActivation(userId, reference, status) {
   }
 }
 
-// INITIALISER UN PAIEMENT
+// INITIALISER UN PAIEMENT DE 25 FCFA FIXE
 router.post("/initialize", authenticateUser, async (req, res) => {
-  console.log("=== INITIALISATION PAIEMENT ===");
+  console.log("=== INITIALISATION PAIEMENT 25 FCFA ===");
 
   try {
-    const { amount = 25, description = "Abonnement Premium Kamerun News" } =
-      req.body;
+    const { description = "Abonnement Premium Kamerun News" } = req.body;
     const userId = req.user.id;
     const userEmail = req.user.email;
+    const amount = 25; // MONTANT FIXE DE 25 FCFA
 
     console.log(`Utilisateur: ${userEmail} (${userId})`);
-    console.log(`Montant demandé: ${amount} FCFA`);
+    console.log(`Montant FIXE: ${amount} FCFA`);
     console.log(`Description: ${description}`);
-
-    // Validation stricte
-    if (amount < 25) {
-      return res.status(400).json({
-        success: false,
-        message: "Le montant minimum est de 25 FCFA",
-      });
-    }
 
     // Générer une référence unique
     const timestamp = Date.now();
     const randomStr = Math.random().toString(36).substring(2, 10);
     const reference = `KAMERUN-${timestamp}-${randomStr}`.toUpperCase();
-    const amountInCents = Math.round(amount); // Envoie directement 25 FCFA
 
     // Créer l'enregistrement dans Supabase
     const { data: transaction, error: txError } = await supabase
@@ -136,13 +127,14 @@ router.post("/initialize", authenticateUser, async (req, res) => {
       .insert({
         user_id: userId,
         reference: reference,
-        amount: amount,
+        amount: amount, // 25 FCFA
         currency: "XAF",
         status: "pending",
         metadata: {
           user_email: userEmail,
           description: description,
           mode: currentMode,
+          fixed_amount: "25 FCFA",
           created_at: new Date().toISOString(),
         },
       })
@@ -158,16 +150,16 @@ router.post("/initialize", authenticateUser, async (req, res) => {
       });
     }
 
-    console.log(`Transaction créée en base: ${reference}`);
+    console.log(`Transaction créée: ${reference} - 25 FCFA`);
 
-    // Données pour NotchPay
+    // Données pour NotchPay - MONTANT FIXE 25
     const customerName =
       req.user.user_metadata?.full_name ||
       req.user.user_metadata?.name ||
       userEmail.split("@")[0];
 
     const payload = {
-      amount: amountInCents,
+      amount: 25, // DIRECTEMENT 25 FCFA (pas de conversion en centimes)
       currency: "XAF",
       description: description,
       reference: reference,
@@ -183,10 +175,11 @@ router.post("/initialize", authenticateUser, async (req, res) => {
         userEmail: userEmail,
         product: "Abonnement Premium Kamerun News",
         mode: currentMode,
+        fixed_amount: "25 FCFA",
       },
     };
 
-    console.log("Envoi à NotchPay...");
+    console.log("Envoi à NotchPay: 25 FCFA");
     console.log("Payload:", JSON.stringify(payload, null, 2));
 
     try {
@@ -241,14 +234,15 @@ router.post("/initialize", authenticateUser, async (req, res) => {
 
       return res.json({
         success: true,
-        message: "Paiement initialisé avec succès",
+        message: "Paiement de 25 FCFA initialisé avec succès",
         mode: currentMode,
         data: {
           authorization_url: paymentUrl,
           reference: reference,
           transaction_id: transaction.id,
-          amount: amount,
+          amount: 25,
           currency: "XAF",
+          description: "Abonnement Premium Kamerun News",
         },
       });
     } catch (error) {
@@ -341,11 +335,14 @@ router.post("/webhook/notchpay", async (req, res) => {
         payload.metadata?.userId ||
         "unknown";
 
+      // CORRECTION: NE PAS diviser le montant par 100
+      const amount = transactionData.amount || 25;
+
       const { data: newTx } = await supabase
         .from("transactions")
         .insert({
           reference: reference,
-          amount: transactionData.amount ? transactionData.amount / 100 : 25,
+          amount: amount, // DIRECTEMENT 25 FCFA
           currency: transactionData.currency || "XAF",
           status: status || "unknown",
           user_id: userId !== "unknown" ? userId : null,
@@ -394,11 +391,11 @@ router.post("/webhook/notchpay", async (req, res) => {
       status === "completed"
     ) {
       // Vérifier que l'utilisateur existe et que la transaction est valide
-      if (transaction.user_id && transaction.amount >= 25) {
+      if (transaction.user_id && transaction.amount === 25) {
         await processPremiumActivation(transaction.user_id, reference, status);
       } else {
         console.log(
-          `Transaction ${reference} non éligible pour activation premium`
+          `Transaction ${reference} non éligible pour activation premium (montant: ${transaction.amount} FCFA)`
         );
       }
     }
@@ -469,7 +466,7 @@ router.get("/verify/:reference", authenticateUser, async (req, res) => {
         status: "complete",
         is_premium: profile?.is_premium || false,
         message: profile?.is_premium
-          ? "Paiement confirmé - Compte premium actif"
+          ? "Paiement de 25 FCFA confirmé - Compte premium actif"
           : "Paiement confirmé - Activation en cours...",
       });
     }
@@ -529,7 +526,7 @@ router.get("/verify/:reference", authenticateUser, async (req, res) => {
           status: "complete",
           is_premium: profile?.is_premium || false,
           message: activated
-            ? "Paiement confirmé - Compte premium activé"
+            ? "Paiement de 25 FCFA confirmé - Compte premium activé"
             : "Paiement confirmé mais problème d'activation",
         });
       }
@@ -598,6 +595,7 @@ router.get("/config", authenticateUser, (req, res) => {
       message: isLive
         ? "Mode LIVE - Paiements réels activés"
         : "Mode TEST - Paiements de démonstration",
+      fixed_amount: "25 FCFA",
     },
   });
 });
