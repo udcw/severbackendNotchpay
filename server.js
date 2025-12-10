@@ -23,7 +23,7 @@ app.use("/api/payments", paymentRoutes);
 app.get("/", (req, res) => {
   res.json({
     success: true,
-    message: "✅ Serveur NotchPay fonctionnel",
+    message: "Serveur NotchPay fonctionnel",
     version: "3.0.0",
     mode: process.env.NODE_ENV === 'production' ? 'LIVE' : 'TEST',
     endpoints: {
@@ -85,7 +85,7 @@ app.use((req, res) => {
 
 // Gestionnaire d'erreurs
 app.use((err, req, res, next) => {
-  console.error('❌ Erreur serveur:', err);
+  console.error('Erreur serveur:', err);
   res.status(500).json({
     success: false,
     message: 'Erreur interne du serveur',
@@ -95,21 +95,21 @@ app.use((err, req, res, next) => {
 
 // Démarrer le serveur
 app.listen(PORT, () => {
-  console.log(`🚀 Serveur démarré sur le port ${PORT}`);
-  console.log(`🔗 URL: http://localhost:${PORT}`);
-  console.log(`🌍 Accessible depuis: https://severbackendnotchpay.onrender.com`);
-  console.log(`📡 Mode: ${process.env.NODE_ENV || 'development'}`);
-  console.log(`🔧 Webhook NotchPay: https://severbackendnotchpay.onrender.com/api/payments/webhook/notchpay`);
+  console.log(`Serveur démarré sur le port ${PORT}`);
+  console.log(`URL: http://localhost:${PORT}`);
+  console.log(`Accessible depuis: https://severbackendnotchpay.onrender.com`);
+  console.log(`Mode: ${process.env.NODE_ENV || 'development'}`);
+  console.log(`Webhook NotchPay: https://severbackendnotchpay.onrender.com/api/payments/webhook/notchpay`);
   
-  // Vérification des variables d'environnement (sans afficher les valeurs sensibles)
+  // Vérification des variables d'environnement
   const envVars = {
     NODE_ENV: process.env.NODE_ENV,
     PORT: process.env.PORT || '4000 (default)',
-    SUPABASE_URL: process.env.SUPABASE_URL ? '✓ Configuré' : '✗ Manquant',
+    SUPABASE_URL: process.env.SUPABASE_URL ? 'Configuré' : 'Manquant',
     NOTCHPAY_PUBLIC_KEY: process.env.NOTCHPAY_PUBLIC_KEY ? 
-      '✓ Configuré (' + (process.env.NOTCHPAY_PUBLIC_KEY.includes('SBX') ? 'TEST' : 'LIVE') + ')' : 
-      '✗ Manquant'
+      'Configuré (' + (process.env.NOTCHPAY_PUBLIC_KEY.includes('SBX') ? 'TEST' : 'LIVE') + ')' : 
+      'Manquant'
   };
   
-  console.log(`⚙️ Variables d'environnement:`, envVars);
+  console.log(`Variables d'environnement:`, envVars);
 });
