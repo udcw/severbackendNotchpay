@@ -28,7 +28,7 @@ function detectMode(publicKey) {
 const currentMode = detectMode(NOTCHPAY_CONFIG.publicKey);
 console.log(`Mode NotchPay détecté: ${currentMode}`);
 
-// FONCTION D'ACTIVATION PREMIUM - SEULEMENT APRÈS PAIEMENT RÉUSSI DE 25 FCFA
+// FONCTION D'ACTIVATION PREMIUM - SEULEMENT APRÈS PAIEMENT RÉUSSI DE 1 FCFA
 async function processPremiumActivation(userId, reference, status) {
   try {
     console.log(`Activation premium pour: ${userId}, référence: ${reference}`);
@@ -58,10 +58,10 @@ async function processPremiumActivation(userId, reference, status) {
       return false;
     }
 
-    // Vérifier que le montant est EXACTEMENT 25 FCFA
-    if (transaction.amount !== 25) {
+    // Vérifier que le montant est EXACTEMENT 1 FCFA
+    if (transaction.amount !== 1) {
       console.error(
-        `Montant incorrect pour activation premium: ${transaction.amount} FCFA (attendu: 25 FCFA)`
+        `Montant incorrect pour activation premium: ${transaction.amount} FCFA (attendu: 1 FCFA)`
       );
       return false;
     }
@@ -102,15 +102,15 @@ async function processPremiumActivation(userId, reference, status) {
   }
 }
 
-// INITIALISER UN PAIEMENT DE 25 FCFA FIXE
+// INITIALISER UN PAIEMENT DE 1 FCFA FIXE
 router.post("/initialize", authenticateUser, async (req, res) => {
-  console.log("=== INITIALISATION PAIEMENT 25 FCFA ===");
+  console.log("=== INITIALISATION PAIEMENT 1 FCFA ===");
 
   try {
     const { description = "Abonnement Premium Kamerun News" } = req.body;
     const userId = req.user.id;
     const userEmail = req.user.email;
-    const amount = 25; // MONTANT FIXE DE 25 FCFA
+    const amount = 1; // MONTANT FIXE DE 1 FCFA
 
     console.log(`Utilisateur: ${userEmail} (${userId})`);
     console.log(`Montant FIXE: ${amount} FCFA`);
@@ -127,14 +127,14 @@ router.post("/initialize", authenticateUser, async (req, res) => {
       .insert({
         user_id: userId,
         reference: reference,
-        amount: amount, // 25 FCFA
+        amount: amount, // 1 FCFA
         currency: "XAF",
         status: "pending",
         metadata: {
           user_email: userEmail,
           description: description,
           mode: currentMode,
-          fixed_amount: "25 FCFA",
+          fixed_amount: "1 FCFA",
           created_at: new Date().toISOString(),
         },
       })
@@ -150,16 +150,16 @@ router.post("/initialize", authenticateUser, async (req, res) => {
       });
     }
 
-    console.log(`Transaction créée: ${reference} - 25 FCFA`);
+    console.log(`Transaction créée: ${reference} - 1 FCFA`);
 
-    // Données pour NotchPay - MONTANT FIXE 25
+    // Données pour NotchPay - MONTANT FIXE 1
     const customerName =
       req.user.user_metadata?.full_name ||
       req.user.user_metadata?.name ||
       userEmail.split("@")[0];
 
     const payload = {
-      amount: 25, // DIRECTEMENT 25 FCFA (pas de conversion en centimes)
+      amount: 1, // DIRECTEMENT 1 FCFA (pas de conversion en centimes)
       currency: "XAF",
       description: description,
       reference: reference,
@@ -175,11 +175,11 @@ router.post("/initialize", authenticateUser, async (req, res) => {
         userEmail: userEmail,
         product: "Abonnement Premium Kamerun News",
         mode: currentMode,
-        fixed_amount: "25 FCFA",
+        fixed_amount: "1 FCFA",
       },
     };
 
-    console.log("Envoi à NotchPay: 25 FCFA");
+    console.log("Envoi à NotchPay: 1 FCFA");
     console.log("Payload:", JSON.stringify(payload, null, 2));
 
     try {
@@ -234,13 +234,13 @@ router.post("/initialize", authenticateUser, async (req, res) => {
 
       return res.json({
         success: true,
-        message: "Paiement de 25 FCFA initialisé avec succès",
+        message: "Paiement de 1 FCFA initialisé avec succès",
         mode: currentMode,
         data: {
           authorization_url: paymentUrl,
           reference: reference,
           transaction_id: transaction.id,
-          amount: 25,
+          amount: 1,
           currency: "XAF",
           description: "Abonnement Premium Kamerun News",
         },
@@ -336,13 +336,13 @@ router.post("/webhook/notchpay", async (req, res) => {
         "unknown";
 
       // CORRECTION: NE PAS diviser le montant par 100
-      const amount = transactionData.amount || 25;
+      const amount = transactionData.amount || 1;
 
       const { data: newTx } = await supabase
         .from("transactions")
         .insert({
           reference: reference,
-          amount: amount, // DIRECTEMENT 25 FCFA
+          amount: amount, // DIRECTEMENT 1 FCFA
           currency: transactionData.currency || "XAF",
           status: status || "unknown",
           user_id: userId !== "unknown" ? userId : null,
@@ -391,7 +391,7 @@ router.post("/webhook/notchpay", async (req, res) => {
       status === "completed"
     ) {
       // Vérifier que l'utilisateur existe et que la transaction est valide
-      if (transaction.user_id && transaction.amount === 25) {
+      if (transaction.user_id && transaction.amount === 1) {
         await processPremiumActivation(transaction.user_id, reference, status);
       } else {
         console.log(
@@ -466,7 +466,7 @@ router.get("/verify/:reference", authenticateUser, async (req, res) => {
         status: "complete",
         is_premium: profile?.is_premium || false,
         message: profile?.is_premium
-          ? "Paiement de 25 FCFA confirmé - Compte premium actif"
+          ? "Paiement de 1 FCFA confirmé - Compte premium actif"
           : "Paiement confirmé - Activation en cours...",
       });
     }
@@ -526,7 +526,7 @@ router.get("/verify/:reference", authenticateUser, async (req, res) => {
           status: "complete",
           is_premium: profile?.is_premium || false,
           message: activated
-            ? "Paiement de 25 FCFA confirmé - Compte premium activé"
+            ? "Paiement de 1 FCFA confirmé - Compte premium activé"
             : "Paiement confirmé mais problème d'activation",
         });
       }
@@ -595,7 +595,7 @@ router.get("/config", authenticateUser, (req, res) => {
       message: isLive
         ? "Mode LIVE - Paiements réels activés"
         : "Mode TEST - Paiements de démonstration",
-      fixed_amount: "25 FCFA",
+      fixed_amount: "1 FCFA",
     },
   });
 });
