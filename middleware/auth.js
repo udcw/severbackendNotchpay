@@ -4,7 +4,7 @@ const { createClient } = require('@supabase/supabase-js');
 // Initialiser Supabase
 const supabase = createClient(
   process.env.SUPABASE_URL,
-  process.env.SUPABASE_SERVICE_ROLE_KEY
+  process.env.SUPABASE_KEY
 );
 
 // Middleware d'authentification amélioré
