@@ -28,7 +28,7 @@ function detectMode(publicKey) {
 const currentMode = detectMode(NOTCHPAY_CONFIG.publicKey);
 console.log(`Mode NotchPay détecté: ${currentMode}`);
 
-// FONCTION D'ACTIVATION PREMIUM - SEULEMENT APRÈS PAIEMENT RÉUSSI DE 1 FCFA
+// FONCTION D'ACTIVATION PREMIUM - SEULEMENT APRÈS PAIEMENT RÉUSSI DE 25 FCFA
 async function processPremiumActivation(userId, reference, status) {
   try {
     console.log(`Activation premium pour: ${userId}, référence: ${reference}`);
@@ -38,11 +38,11 @@ async function processPremiumActivation(userId, reference, status) {
       return false;
     }
 
-    // Vérifier d'abord que le paiement est bien "complete" ou "success"
+    // Chercher la transaction par notre référence (merchant_reference)
     const { data: transaction } = await supabase
       .from("transactions")
       .select("status, amount")
-      .eq("reference", reference)
+      .eq("reference", reference) // C'est notre merchant_reference
       .eq("user_id", userId)
       .single();
 
@@ -58,15 +58,15 @@ async function processPremiumActivation(userId, reference, status) {
       return false;
     }
 
-    // Vérifier que le montant est EXACTEMENT 1 FCFA
-    if (transaction.amount !== 1) {
+    // Vérifier que le montant est EXACTEMENT 25 FCFA
+    if (Math.abs(transaction.amount - 25) > 0.01) {
       console.error(
-        `Montant incorrect pour activation premium: ${transaction.amount} FCFA (attendu: 1 FCFA)`
+        `Montant incorrect pour activation premium: ${transaction.amount} FCFA (attendu: 25 FCFA)`
       );
       return false;
     }
 
-    // Mettre à jour le profil
+    // Activer premium
     const { error: profileError } = await supabase
       .from("profiles")
       .update({
@@ -102,15 +102,15 @@ async function processPremiumActivation(userId, reference, status) {
   }
 }
 
-// INITIALISER UN PAIEMENT DE 1 FCFA FIXE
+// INITIALISER UN PAIEMENT DE 25 FCFA FIXE
 router.post("/initialize", authenticateUser, async (req, res) => {
-  console.log("=== INITIALISATION PAIEMENT 1 FCFA ===");
+  console.log("=== INITIALISATION PAIEMENT 25 FCFA ===");
 
   try {
     const { description = "Abonnement Premium Kamerun News" } = req.body;
     const userId = req.user.id;
     const userEmail = req.user.email;
-    const amount = 1; // MONTANT FIXE DE 1 FCFA
+    const amount = 25; // MONTANT FIXE DE 25 FCFA
 
     console.log(`Utilisateur: ${userEmail} (${userId})`);
     console.log(`Montant FIXE: ${amount} FCFA`);
@@ -121,20 +121,24 @@ router.post("/initialize", authenticateUser, async (req, res) => {
     const randomStr = Math.random().toString(36).substring(2, 10);
     const reference = `KAMERUN-${timestamp}-${randomStr}`.toUpperCase();
 
+    // IMPORTANT: NotchPay attend le montant en centimes pour 25 FCFA
+    const amountForNotchpay = 2500; // 25 FCFA * 100 = 2500 centimes
+
     // Créer l'enregistrement dans Supabase
     const { data: transaction, error: txError } = await supabase
       .from("transactions")
       .insert({
         user_id: userId,
         reference: reference,
-        amount: amount, // 1 FCFA
+        amount: amount, // 25 FCFA
         currency: "XAF",
         status: "pending",
         metadata: {
           user_email: userEmail,
           description: description,
           mode: currentMode,
-          fixed_amount: "1 FCFA",
+          fixed_amount: "25 FCFA",
+          notchpay_amount_in_cents: amountForNotchpay,
           created_at: new Date().toISOString(),
         },
       })
@@ -150,37 +154,36 @@ router.post("/initialize", authenticateUser, async (req, res) => {
       });
     }
 
-    console.log(`Transaction créée: ${reference} - 1 FCFA`);
+    console.log(`Transaction créée: ${reference} - 25 FCFA (${amountForNotchpay} centimes)`);
 
-    // Données pour NotchPay - MONTANT FIXE 1
+    // Données pour NotchPay - MONTANT EN CENTIMES
     const customerName =
       req.user.user_metadata?.full_name ||
       req.user.user_metadata?.name ||
       userEmail.split("@")[0];
 
     const payload = {
-      amount: 1, // DIRECTEMENT 1 FCFA (pas de conversion en centimes)
+      amount: amountForNotchpay, // 2500 centimes = 25 FCFA
       currency: "XAF",
       description: description,
-      reference: reference,
+      reference: reference, // Notre référence (sera merchant_reference chez NotchPay)
       email: userEmail,
       customer: {
         name: customerName,
         email: userEmail,
       },
-      callback_url: `https://severbackendnotchpay.onrender.com/api/payments/webhook/notchpay`,
+      callback_url: `https://severbackendnotchpay.onrender.com/api/payments/callback/${reference}`,
       webhook_url: `https://severbackendnotchpay.onrender.com/api/payments/webhook/notchpay`,
       metadata: {
         userId: userId,
         userEmail: userEmail,
         product: "Abonnement Premium Kamerun News",
         mode: currentMode,
-        fixed_amount: "1 FCFA",
+        fixed_amount: "25 FCFA",
       },
     };
 
-    console.log("Envoi à NotchPay: 1 FCFA");
-    console.log("Payload:", JSON.stringify(payload, null, 2));
+    console.log("Envoi à NotchPay:", JSON.stringify(payload, null, 2));
 
     try {
       const response = await axios.post(
@@ -217,7 +220,7 @@ router.post("/initialize", authenticateUser, async (req, res) => {
         }
       }
 
-      console.log(`URL de paiement: ${paymentUrl.substring(0, 80)}...`);
+      console.log(`URL de paiement: ${paymentUrl}`);
 
       // Mettre à jour la transaction avec l'URL
       await supabase
@@ -227,6 +230,7 @@ router.post("/initialize", authenticateUser, async (req, res) => {
             ...transaction.metadata,
             payment_url: paymentUrl,
             notchpay_response: data,
+            notchpay_reference: data.transaction?.reference || data.reference,
             updated_at: new Date().toISOString(),
           },
         })
@@ -234,13 +238,14 @@ router.post("/initialize", authenticateUser, async (req, res) => {
 
       return res.json({
         success: true,
-        message: "Paiement de 1 FCFA initialisé avec succès",
+        message: "Paiement de 25 FCFA initialisé avec succès",
         mode: currentMode,
         data: {
           authorization_url: paymentUrl,
           reference: reference,
           transaction_id: transaction.id,
-          amount: 1,
+          amount: 25,
+          amount_in_cents: amountForNotchpay,
           currency: "XAF",
           description: "Abonnement Premium Kamerun News",
         },
@@ -288,7 +293,7 @@ router.post("/initialize", authenticateUser, async (req, res) => {
   }
 });
 
-// WEBHOOK NOTCHPAY - SEULE SOURCE D'ACTIVATION PREMIUM
+// WEBHOOK NOTCHPAY - CORRIGÉ POUR GÉRER LES CENTIMES ET LES RÉFÉRENCES
 router.post("/webhook/notchpay", async (req, res) => {
   console.log("=== WEBHOOK NOTCHPAY REÇU ===");
 
@@ -298,29 +303,34 @@ router.post("/webhook/notchpay", async (req, res) => {
 
     // Extraire les informations
     let transactionData = payload.data || payload.transaction || payload;
-    let reference =
-      transactionData.reference || transactionData.merchant_reference;
-    let status =
-      transactionData.status || payload.event?.replace("payment.", "");
+    
+    // IMPORTANT: NotchPay envoie merchant_reference (notre référence) et reference (sa référence interne)
+    let merchantReference = transactionData.merchant_reference;
+    let notchpayReference = transactionData.reference;
+    let status = transactionData.status || payload.event?.replace("payment.", "");
 
     if (payload.event && payload.event.includes(".")) {
       status = payload.event.split(".")[1];
     }
 
-    console.log(`Traitement webhook: Référence=${reference}, Statut=${status}`);
+    console.log(`Traitement webhook:`);
+    console.log(`- Notre référence (merchant_reference): ${merchantReference}`);
+    console.log(`- Référence NotchPay: ${notchpayReference}`);
+    console.log(`- Statut: ${status}`);
+    console.log(`- Montant reçu: ${transactionData.amount} centimes`);
 
-    if (!reference) {
-      console.error("Référence manquante dans le webhook");
+    if (!merchantReference && !notchpayReference) {
+      console.error("Aucune référence dans le webhook");
       return res
         .status(400)
         .json({ success: false, message: "Référence manquante" });
     }
 
-    // Chercher la transaction
+    // Chercher la transaction par NOTRE référence (merchant_reference)
     const { data: transaction, error: txError } = await supabase
       .from("transactions")
       .select("*")
-      .eq("reference", reference)
+      .eq("reference", merchantReference)
       .maybeSingle();
 
     if (txError) {
@@ -328,21 +338,21 @@ router.post("/webhook/notchpay", async (req, res) => {
     }
 
     if (!transaction) {
-      console.log(`Transaction non trouvée: ${reference}, création...`);
+      console.log(`Transaction non trouvée avec merchant_reference: ${merchantReference}, création...`);
 
       const userId =
         transactionData.metadata?.userId ||
         payload.metadata?.userId ||
         "unknown";
 
-      // CORRECTION: NE PAS diviser le montant par 100
-      const amount = transactionData.amount || 1;
+      // IMPORTANT: NotchPay envoie le montant en centimes, convertir en FCFA
+      const amountInFcfa = transactionData.amount ? transactionData.amount / 100 : 25;
 
       const { data: newTx } = await supabase
         .from("transactions")
         .insert({
-          reference: reference,
-          amount: amount, // DIRECTEMENT 1 FCFA
+          reference: merchantReference || notchpayReference,
+          amount: amountInFcfa, // Stocker en FCFA
           currency: transactionData.currency || "XAF",
           status: status || "unknown",
           user_id: userId !== "unknown" ? userId : null,
@@ -350,38 +360,61 @@ router.post("/webhook/notchpay", async (req, res) => {
             webhook_data: payload,
             created_from_webhook: true,
             received_at: new Date().toISOString(),
+            notchpay_reference: notchpayReference,
+            merchant_reference: merchantReference,
+            amount_in_cents: transactionData.amount,
           },
         })
         .select()
         .single();
 
-      // NE PAS activer premium si la transaction vient d'être créée depuis le webhook
+      console.log(`Transaction créée depuis webhook: ${newTx?.id}`);
+
+      // Si paiement réussi et utilisateur connu, activer premium
+      if (
+        (status === "complete" || status === "success" || status === "completed") &&
+        userId !== "unknown" &&
+        amountInFcfa === 25
+      ) {
+        await processPremiumActivation(userId, merchantReference || notchpayReference, status);
+      }
+
       return res
         .status(200)
         .json({ received: true, message: "Transaction créée depuis webhook" });
     }
 
     console.log(
-      `Transaction trouvée: ${transaction.id}, utilisateur: ${transaction.user_id}`
+      `Transaction trouvée: ${transaction.id}, utilisateur: ${transaction.user_id}, montant actuel: ${transaction.amount} FCFA`
     );
 
+    // Convertir le montant NotchPay (centimes) en FCFA
+    const amountInFcfa = transactionData.amount ? transactionData.amount / 100 : transaction.amount;
+
     // Mettre à jour la transaction
+    const updateData = {
+      status: status || "processed",
+      amount: amountInFcfa, // Mettre à jour avec le montant converti
+      metadata: {
+        ...transaction.metadata,
+        webhook_data: payload,
+        webhook_received_at: new Date().toISOString(),
+        notchpay_status: status,
+        notchpay_reference: notchpayReference,
+        last_webhook: new Date().toISOString(),
+        amount_in_cents: transactionData.amount,
+      },
+      updated_at: new Date().toISOString(),
+    };
+
+    // Si paiement réussi, ajouter completed_at
+    if (status === "complete" || status === "success" || status === "completed") {
+      updateData.completed_at = new Date().toISOString();
+    }
+
     await supabase
       .from("transactions")
-      .update({
-        status: status || "processed",
-        metadata: {
-          ...transaction.metadata,
-          webhook_data: payload,
-          webhook_received_at: new Date().toISOString(),
-          notchpay_status: status,
-        },
-        updated_at: new Date().toISOString(),
-        completed_at:
-          status === "complete" || status === "success"
-            ? new Date().toISOString()
-            : null,
-      })
+      .update(updateData)
       .eq("id", transaction.id);
 
     // Traiter l'activation premium UNIQUEMENT si paiement réussi
@@ -390,23 +423,30 @@ router.post("/webhook/notchpay", async (req, res) => {
       status === "success" ||
       status === "completed"
     ) {
-      // Vérifier que l'utilisateur existe et que la transaction est valide
-      if (transaction.user_id && transaction.amount === 1) {
-        await processPremiumActivation(transaction.user_id, reference, status);
+      // Vérifier que l'utilisateur existe et que le montant est 25 FCFA
+      if (transaction.user_id && amountInFcfa === 25) {
+        const activated = await processPremiumActivation(
+          transaction.user_id, 
+          merchantReference, 
+          status
+        );
+        console.log(`Activation premium: ${activated ? "succès" : "échec"}`);
       } else {
         console.log(
-          `Transaction ${reference} non éligible pour activation premium (montant: ${transaction.amount} FCFA)`
+          `Transaction ${merchantReference} non éligible pour activation premium: montant=${amountInFcfa} FCFA, user=${transaction.user_id}`
         );
       }
     }
 
-    console.log(`Webhook traité pour ${reference}`);
+    console.log(`Webhook traité pour ${merchantReference}, statut: ${status}, montant: ${amountInFcfa} FCFA`);
 
     return res.status(200).json({
       success: true,
       message: "Webhook traité avec succès",
-      reference: reference,
+      reference: merchantReference,
+      notchpay_reference: notchpayReference,
       status: status,
+      amount_fcfa: amountInFcfa,
     });
   } catch (error) {
     console.error("Erreur traitement webhook:", error);
@@ -425,7 +465,7 @@ router.get("/verify/:reference", authenticateUser, async (req, res) => {
 
     console.log(`Vérification manuelle: ${reference} pour ${userId}`);
 
-    // Chercher la transaction
+    // Chercher la transaction par NOTRE référence
     const { data: transaction, error: txError } = await supabase
       .from("transactions")
       .select("*")
@@ -449,7 +489,7 @@ router.get("/verify/:reference", authenticateUser, async (req, res) => {
       });
     }
 
-    console.log(`Transaction trouvée, statut: ${transaction.status}`);
+    console.log(`Transaction trouvée, statut: ${transaction.status}, montant: ${transaction.amount} FCFA`);
 
     // Si déjà complet, vérifier le profil
     if (transaction.status === "complete" || transaction.status === "success") {
@@ -466,17 +506,20 @@ router.get("/verify/:reference", authenticateUser, async (req, res) => {
         status: "complete",
         is_premium: profile?.is_premium || false,
         message: profile?.is_premium
-          ? "Paiement de 1 FCFA confirmé - Compte premium actif"
+          ? "Paiement de 25 FCFA confirmé - Compte premium actif"
           : "Paiement confirmé - Activation en cours...",
       });
     }
 
     // Vérifier avec NotchPay
     try {
-      console.log(`Vérification chez NotchPay: ${reference}`);
+      console.log(`Vérification chez NotchPay pour: ${reference}`);
+
+      // Essayer avec notre référence d'abord, puis avec la référence NotchPay
+      let notchpayRef = transaction.metadata?.notchpay_reference || reference;
 
       const response = await axios.get(
-        `${NOTCHPAY_CONFIG.baseUrl}/payments/${reference}`,
+        `${NOTCHPAY_CONFIG.baseUrl}/payments/${notchpayRef}`,
         {
           headers: {
             Authorization: NOTCHPAY_CONFIG.publicKey,
@@ -488,18 +531,24 @@ router.get("/verify/:reference", authenticateUser, async (req, res) => {
 
       const data = response.data;
       const notchpayStatus = data.status || data.transaction?.status;
+      const notchpayAmount = data.amount || data.transaction?.amount;
 
-      console.log(`Statut NotchPay: ${notchpayStatus}`);
+      console.log(`Statut NotchPay: ${notchpayStatus}, Montant: ${notchpayAmount} centimes`);
+
+      // Convertir le montant
+      const amountInFcfa = notchpayAmount ? notchpayAmount / 100 : transaction.amount;
 
       // Mettre à jour la transaction
       await supabase
         .from("transactions")
         .update({
           status: notchpayStatus || "checked",
+          amount: amountInFcfa,
           metadata: {
             ...transaction.metadata,
             last_verification: new Date().toISOString(),
             notchpay_status: notchpayStatus,
+            notchpay_amount: notchpayAmount,
           },
           updated_at: new Date().toISOString(),
         })
@@ -525,8 +574,9 @@ router.get("/verify/:reference", authenticateUser, async (req, res) => {
           pending: false,
           status: "complete",
           is_premium: profile?.is_premium || false,
+          amount_fcfa: amountInFcfa,
           message: activated
-            ? "Paiement de 1 FCFA confirmé - Compte premium activé"
+            ? `Paiement de ${amountInFcfa} FCFA confirmé - Compte premium activé`
             : "Paiement confirmé mais problème d'activation",
         });
       }
@@ -589,13 +639,13 @@ router.get("/config", authenticateUser, (req, res) => {
     config: {
       mode: currentMode,
       base_url: NOTCHPAY_CONFIG.baseUrl,
-      webhook_url:
-        "https://severbackendnotchpay.onrender.com/api/payments/webhook/notchpay",
+      webhook_url: "https://severbackendnotchpay.onrender.com/api/payments/webhook/notchpay",
       status: "ACTIF",
       message: isLive
         ? "Mode LIVE - Paiements réels activés"
         : "Mode TEST - Paiements de démonstration",
-      fixed_amount: "1 FCFA",
+      fixed_amount: "25 FCFA",
+      amount_in_cents: 2500,
     },
   });
 });
@@ -607,7 +657,7 @@ router.get("/user-status", authenticateUser, async (req, res) => {
 
     const { data: profile, error } = await supabase
       .from("profiles")
-      .select("is_premium, payment_reference, last_payment_date, email")
+      .select("is_premium, payment_reference, last_payment_date, email, created_at")
       .eq("id", userId)
       .single();
 
@@ -625,6 +675,7 @@ router.get("/user-status", authenticateUser, async (req, res) => {
       payment_reference: profile.payment_reference,
       last_payment_date: profile.last_payment_date,
       email: profile.email,
+      account_created: profile.created_at,
     });
   } catch (error) {
     console.error("Erreur vérification statut:", error);
@@ -647,6 +698,58 @@ router.get("/callback/:reference", async (req, res) => {
   } catch (error) {
     console.error("Erreur redirection:", error);
     res.redirect(`https://kamerun-news.com/payment-error`);
+  }
+});
+
+// TEST DU WEBHOOK (pour debug)
+router.post("/test-webhook", async (req, res) => {
+  console.log("=== TEST WEBHOOK MANUEL ===");
+  
+  // Simuler un payload de webhook réussi
+  const testPayload = {
+    "event": "payment.complete",
+    "data": {
+      "amount": 2500, // 25 FCFA en centimes
+      "description": "Abonnement Premium Kamerun News",
+      "reference": "trx.test12345", // Référence NotchPay
+      "merchant_reference": "KAMERUN-TEST-REFERENCE", // Notre référence
+      "status": "complete",
+      "currency": "XAF",
+      "metadata": {
+        "userId": "test-user-id",
+        "userEmail": "test@example.com",
+        "product": "Abonnement Premium Kamerun News"
+      },
+      "created_at": new Date().toISOString()
+    }
+  };
+
+  try {
+    // Simuler le webhook
+    console.log("Payload de test:", JSON.stringify(testPayload, null, 2));
+    
+    // Calculer le montant en FCFA
+    const amountInFcfa = testPayload.data.amount / 100;
+    console.log(`Montant en centimes: ${testPayload.data.amount}`);
+    console.log(`Montant en FCFA: ${amountInFcfa}`);
+    
+    return res.json({
+      success: true,
+      message: "Webhook testé",
+      test_data: {
+        merchant_reference: testPayload.data.merchant_reference,
+        notchpay_reference: testPayload.data.reference,
+        amount_centimes: testPayload.data.amount,
+        amount_fcfa: amountInFcfa,
+        status: testPayload.data.status
+      },
+      note: "Ceci est un test, aucune transaction réelle n'a été modifiée"
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: error.message
+    });
   }
 });
 
